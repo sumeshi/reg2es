@@ -27,7 +27,10 @@ def decode_data(data_type: int, data: bytes) -> str:
     try:
         result = enum[data_type](data)
     except Exception:
-        result = data.hex()
+        if data:
+            result = data.hex()
+        else:
+            result = None
     
     return result
 
