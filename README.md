@@ -100,26 +100,26 @@ $ reg2es /regfiles/ # The Path is recursively expanded to file1~6.reg.
 When using from the commandline interface:
 
 ```
-$ reg2es /path/to/your/file.reg --host=localhost --port=9200 --index=foobar
+$ reg2es /path/to/your/file.dat --host=localhost --port=9200 --index=foobar
 ```
 
 When using from the python-script:
 
 ```py
 if __name__ == '__main__':
-    reg2es('/path/to/your/file.reg', host=localhost, port=9200, index='foobar')
+    reg2es('/path/to/your/file.dat', host=localhost, port=9200, index='foobar')
 ```
 
 With the Amazon Elasticsearch Serivce (ES):
 
 ```
-$ reg2es /path/to/your/file.reg --host=example.us-east-1.es.amazonaws.com --port=443 --scheme=https --index=foobar
+$ reg2es /path/to/your/file.dat --host=example.us-east-1.es.amazonaws.com --port=443 --scheme=https --index=foobar
 ```
 
 With credentials for Elastic Security:
 
 ```
-$ reg2es /path/to/your/file.reg --host=localhost --port=9200 --index=foobar --login=elastic --pwd=******
+$ reg2es /path/to/your/file.dat --host=localhost --port=9200 --index=foobar --login=elastic --pwd=******
 ```
 
 Note: The current version does not verify the certificate.
@@ -161,7 +161,11 @@ elasticsearch.exceptions.RequestError: RequestError(400, 'illegal_argument_excep
 ```
 
 Windows NT Registry has a large number of elements per document and is caught in the initial value of the limit.
-Therefore, please use the --fields-limit option to remove the limit.
+Therefore, please use the --fields-limit(default: 10000) option to remove the limit.
+
+```
+$ reg2es --fields-limit 10000 NTUSER.DAT
+```
 
 ## Contributing
 
