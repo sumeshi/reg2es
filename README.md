@@ -154,6 +154,15 @@ if __name__ == '__main__':
 $ pip install reg2es
 ```
 
+## Known Issues
+
+```
+elasticsearch.exceptions.RequestError: RequestError(400, 'illegal_argument_exception', 'Limit of total fields [1000] in index [reg2es] has been exceeded')
+```
+
+Windows NT Registry has a large number of elements per document and is caught in the initial value of the limit.
+Therefore, please use the --fields-limit option to remove the limit.
+
 ## Contributing
 
 [CONTRIBUTING](https://github.com/sumeshi/reg2es/blob/master/CONTRIBUTING.md)
