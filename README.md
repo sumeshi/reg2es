@@ -151,6 +151,62 @@ if __name__ == '__main__':
   result: dict = reg2json(filepath)
 ```
 
+## Output Format
+
+The structures is not well optimized for searchable with Elasticsearch. I'm waiting for your PR!!
+
+```json
+{
+  "ROOT": {
+    "AppEvents": {
+      "meta": {
+        "last_written_time": "2015-10-30T07:24:57.814133"
+      },
+      "EventLabels": {
+        "meta": {
+          "last_written_time": "2015-10-30T07:25:51.735838"
+        },
+        "Default": {
+          "meta": {
+            "last_written_time": "2015-10-30T07:24:57.861009"
+          },
+          "_": {
+            "type": 1,
+            "identifier": "REG_SZ",
+            "size": 26,
+            "data": "Default Beep"
+          },
+          "DispFileName": {
+            "type": 1,
+            "identifier": "REG_SZ",
+            "size": 34,
+            "data": "@mmres.dll,-5824"
+          }
+        },
+        "ActivatingDocument": {
+          "meta": {
+            "last_written_time": "2015-10-30T07:24:57.861009"
+          },
+          "_": {
+            "type": 1,
+            "identifier": "REG_SZ",
+            "size": 40,
+            "data": "Complete Navigation"
+          },
+          "DispFileName": {
+            "type": 1,
+            "identifier": "REG_SZ",
+            "size": 40,
+            "data": "@ieframe.dll,-10321"
+          }
+        }
+        ...
+      }
+    }
+  }
+}
+```
+
 ## Installation
 
 ### via PyPI
