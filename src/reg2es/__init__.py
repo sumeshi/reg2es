@@ -17,6 +17,7 @@ def reg2es(
     pipeline: str = "",
     login: str = "",
     pwd: str = "",
+    fields_limit: int = 10000,
 ) -> None:
     """Fast import of Windows NT Registry(REGF) into Elasticsearch.
     Args:
@@ -43,6 +44,9 @@ def reg2es(
 
         pwd (str, optional):
             Elasticsearch password associated with the login provided.
+
+        fields_limit(int, optional):
+            index.mapping.total_fields.limit settings. Defaults to 10000.
     """
 
     mp = Reg2esPresenter(
@@ -55,6 +59,7 @@ def reg2es(
         login=login,
         pwd=pwd,
         is_quiet=True,
+        fields_limit=fields_limit,
     ).bulk_import()
 
 

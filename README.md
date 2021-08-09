@@ -93,6 +93,10 @@ $ reg2es /regfiles/ # The Path is recursively expanded to file1~6.reg.
 --pwd:
   The password linked to the login provided
   (default: )
+
+--fields-limit
+  index.mapping.total_fields.limit settings
+  (default: 10000)
 ```
 
 ### Examples
