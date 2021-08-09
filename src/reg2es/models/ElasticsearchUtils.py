@@ -2,7 +2,7 @@
 from typing import List
 from hashlib import sha1
 
-from elasticsearch import Elasticsearch
+from elasticsearch import Elasticsearch, exceptions, client
 from elasticsearch.helpers import bulk
 
 import orjson
@@ -26,7 +26,7 @@ class ElasticsearchUtils(object):
         """
         return sha1(orjson.dumps(record, option=orjson.OPT_SORT_KEYS)).hexdigest()
 
-    def bulk_indice(self, records: List[dict], index_name: str, pipeline: str) -> None:
+    def bulk_indice(self, records: List[dict], index_name: str, pipeline: str, fields_limit: int = 10000) -> None:
         """Bulk indices the documents into Elasticsearch.
 
         Args:
@@ -34,12 +34,11 @@ class ElasticsearchUtils(object):
             index_name (str): Target Elasticsearch Index.
             pipeline (str): Target Elasticsearch Ingest Pipeline
         """
-        # events = []
         for record in [records]:
-            self.es.index(index=index_name, id=self.calc_hash(record), body=record)
-        #     event = {"_id": self.calc_hash(record), "_index": index_name, "_source": record}
-        #     if pipeline != "":
-        #         event["pipeline"] = pipeline
-        #     events.append(event)
-        # bulk(self.es, events, raise_on_error=False)
+            try:
+                self.es.index(index=index_name, id=self.calc_hash(record), body=record)
+            except exceptions.RequestError:
+                ic = client.IndicesClient(self.es)
+                ic.put_settings({"index.mapping.total_fields.limit": fields_limit})
+                self.es.index(index=index_name, id=self.calc_hash(record), body=record)
 
