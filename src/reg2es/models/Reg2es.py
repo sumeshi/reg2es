@@ -1,97 +1,94 @@
 # coding: utf-8
 from itertools import chain
 from pathlib import Path
-from typing import List, Generator, Iterable
+from typing import List, Generator, Iterable, Optional
 from itertools import islice
-from multiprocessing import Pool, cpu_count
 
 import orjson
-from reg import PyRegParser
+import pyregf
 
 
-def generate_chunks(chunk_size: int, iterable: Iterable) -> Generator:
-    """Generate arbitrarily sized chunks from iterable objects.
+def decode_data(data_type: int, data: bytes) -> str:
+    enum = {
+        0: lambda x: x.hex(),
+        1: lambda x: x.decode('utf-16').rstrip('\u0000'),
+        2: lambda x: x.decode('utf-16').rstrip('\u0000'),
+        3: lambda x: x.hex(),
+        4: lambda x: int.from_bytes(x, 'little'),
+        5: lambda x: int.from_bytes(x, 'big'),
+        6: lambda x: x.decode('utf-16').rstrip('\u0000'),
+        7: lambda x: x.decode('utf-16').rstrip('\u0000').split(' '),
+        8: lambda x: x.hex(),
+        9: lambda x: x.hex(),
+        10: lambda x: x.hex(),
+        11: lambda x: int.from_bytes(x, 'little'),
+    }
 
-    Args:
-        chunk_size (int): Chunk sizes.
-        iterable (Iterable): Original Iterable object.
-
-    Yields:
-        Generator: List
-    """
-    i = iter(iterable)
-    piece = list(islice(i, chunk_size))
-    while piece:
-        yield piece
-        piece = list(islice(i, chunk_size))
-
-
-def format_record(record: dict, filepath: str):
-    """Formatting each Registry records.
-
-    Args:
-        records (List[str]): chunk of Registry records(json).
-        filepath str: file full path.
-
-    Yields:
-        List[dict]: Registry records.
-    """
-
-    return record
+    try:
+        result = enum[data_type](data)
+    except Exception:
+        result = data.hex()
+    
+    return result
 
 
-def process_by_chunk(records: List[str], rows: List[bytes]) -> List[dict]:
-    """Perform formatting for each chunk. (for efficiency)
+def get_data_type_identifier(data_type: int) -> Optional[str]:
+    enum = {
+        0: 'REG_NONE',
+        1: 'REG_SZ',
+        2: 'REG_EXPAND_SZ',
+        3: 'REG_BINARY',
+        4: 'REG_DWORD',
+        5: 'REG_DWORD_BIG_ENDIAN',
+        6: 'REG_LINK',
+        7: 'REG_MULTI_SZ',
+        8: 'REG_RESOURCE_LIST',
+        9: 'REG_FULL_RESOURCE_DESCRIPTOR',
+        10: 'REG_RESOURCE_REQUIREMENTS_LIST',
+        11: 'REG_QWORD',
+    }
+    return enum.get(data_type, None)
 
-    Args:
-        records (List[str]): chunk of Registry records(json).
-        rows (List[bytes]): chunk of Registry records(csv).
 
-    Yields:
-        List[dict]: Registry records list.
-    """
+def get_all_hives(reg: pyregf.key) -> dict:
 
-    filename_list: List[str] = [
-        row.decode("utf-8").split(",")[-1].strip() for row in rows
-    ]
-
-    concatenated_json: str = f"[{','.join(records)}]"
-    record_list: List[dict] = orjson.loads(concatenated_json)
-
-    return [
-        format_record(record, filename) for record, filename in zip(record_list, filename_list)
-    ]
+    subtree = dict()
+    if reg.sub_keys:
+        for r in reg.sub_keys:
+            subtree[r.get_name()] = {**{"meta": {"last_written_time": r.get_last_written_time().isoformat()}}, **get_all_hives(r)}
+    
+    values = {
+            v.get_name() if v.get_name() else "_": {
+                "type": v.get_type(),
+                "identifier": get_data_type_identifier(v.get_type()),
+                "size": v.get_data_size(),
+                "data": decode_data(v.get_type(), v.get_data()),
+            } for v in reg.values
+        }
+    
+    if subtree and values:
+        return {**subtree, **values}
+    elif subtree:
+        return subtree
+    elif values:
+        return values
+    else:
+        return {}
 
 
 class Reg2es(object):
     def __init__(self, input_path: Path) -> None:
         self.path = input_path
-        self.parser = PyRegParser(self.path.open(mode="rb"))
-        self.csvparser = PyRegParser(self.path.open(mode="rb"))
+        self.reg_file = pyregf.file()
+        self.reg_file.open_file_object(self.path.open('rb'))
 
-    def gen_records(self, multiprocess: bool, chunk_size: int) -> Generator:
+    def gen_records(self) -> Generator:
         """Generates the formatted Registry records chunks.
 
-        Args:
-            multiprocess (bool): Flag to run multiprocessing.
-            chunk_size (int): Size of the chunk to be processed for each process.
-
         Yields:
-            Generator: Yields List[dict].
+            Generator: Yields dict.
         """
-        if multiprocess:
-            with Pool(cpu_count()) as pool:
-                results = pool.starmap_async(process_by_chunk, zip(generate_chunks(chunk_size, self.parser.entries_json()), generate_chunks(chunk_size, self.csvparser.entries_csv())))
-                yield list(chain.from_iterable(results.get(timeout=None)))
-        else:
-            buffer: List[dict] = list()
-            for json, csv in zip(
-                generate_chunks(chunk_size, self.parser.entries_json()), generate_chunks(chunk_size, self.csvparser.entries_csv())
-            ):
-                if chunk_size <= len(buffer):
-                    yield list(chain.from_iterable(buffer))
-                    buffer.clear()
-                else:
-                    buffer.append(process_by_chunk(json, csv))
-            else:
-                yield list(chain.from_iterable(buffer))
+        root_key = self.reg_file.get_root_key()
+        hives = {root_key.get_name(): get_all_hives(root_key)}
+
+        yield hives

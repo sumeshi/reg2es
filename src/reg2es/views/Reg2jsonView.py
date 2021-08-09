@@ -1,5 +1,6 @@
 # coding: utf-8
-from multiprocessing import cpu_count
+import re
+import codecs
 
 from reg2es.views.BaseView import BaseView
 from reg2es.presenters.Reg2jsonPresenter import Reg2jsonPresenter
@@ -20,15 +21,10 @@ class Reg2jsonView(BaseView):
         view = Reg2jsonView()
         view.log(f"Converting {self.args.reg_file}.", self.args.quiet)
 
-        if self.args.multiprocess:
-            view.log(f"Multi-Process: {cpu_count()}", self.args.quiet)
-
         Reg2jsonPresenter(
             input_path=self.args.reg_file,
             output_path=self.args.output_file,
             is_quiet=self.args.quiet,
-            multiprocess=self.args.multiprocess,
-            chunk_size=self.args.size,
         ).export_json()
 
         view.log("Converted.", self.args.quiet)

@@ -34,10 +34,12 @@ class ElasticsearchUtils(object):
             index_name (str): Target Elasticsearch Index.
             pipeline (str): Target Elasticsearch Ingest Pipeline
         """
-        events = []
-        for record in records:
-            event = {"_id": self.calc_hash(record), "_index": index_name, "_source": record}
-            if pipeline != "":
-                event["pipeline"] = pipeline
-            events.append(event)
-        bulk(self.es, events, raise_on_error=False)
+        # events = []
+        for record in [records]:
+            self.es.index(index=index_name, id=self.calc_hash(record), body=record)
+        #     event = {"_id": self.calc_hash(record), "_index": index_name, "_source": record}
+        #     if pipeline != "":
+        #         event["pipeline"] = pipeline
+        #     events.append(event)
+        # bulk(self.es, events, raise_on_error=False)
+

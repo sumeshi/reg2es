@@ -17,8 +17,6 @@ def reg2es(
     pipeline: str = "",
     login: str = "",
     pwd: str = "",
-    multiprocess: bool = False,
-    chunk_size: int = 500
 ) -> None:
     """Fast import of Windows NT Registry(REGF) into Elasticsearch.
     Args:
@@ -45,12 +43,6 @@ def reg2es(
 
         pwd (str, optional):
             Elasticsearch password associated with the login provided.
-
-        multiprocess (bool, optional):
-            Flag to run multiprocessing.
-
-        chunk_size (int, optional):
-            Size of the chunk to be processed for each process.
     """
 
     mp = Reg2esPresenter(
@@ -63,24 +55,20 @@ def reg2es(
         login=login,
         pwd=pwd,
         is_quiet=True,
-        multiprocess=multiprocess,
-        chunk_size=int(chunk_size),
     ).bulk_import()
 
 
-def reg2json(filepath: str, multiprocess: bool = False, chunk_size: int = 500) -> List[dict]:
-    """Convert Windows NT Registry to List[dict].
+def reg2json(filepath: str) -> dict:
+    """Convert Windows NT Registry to dict.
 
     Args:
         filepath (str): Input Registry file.
-        multiprocess (bool): Flag to run multiprocessing.
-        chunk_size (int): Size of the chunk to be processed for each process.
 
     Note:
         Since the content of the file is loaded into memory at once,
         it requires the same amount of memory as the file to be loaded.
     """
     reg = Reg2es(Path(filepath).resolve())
-    records: List[dict] = sum(list(reg.gen_records(multiprocess=multiprocess, chunk_size=chunk_size)), list())
+    record: dict = reg.gen_records()
 
-    return records
+    return record[0]

@@ -23,8 +23,6 @@ class Reg2esPresenter(object):
         login: str = "",
         pwd: str = "",
         is_quiet: bool = False,
-        multiprocess: bool = False,
-        chunk_size: int = 500
     ):
         self.input_path = input_path
         self.host = host
@@ -35,14 +33,12 @@ class Reg2esPresenter(object):
         self.login = login
         self.pwd = pwd
         self.is_quiet = is_quiet
-        self.multiprocess = multiprocess
-        self.chunk_size = chunk_size
 
     def reg2es(self) -> List[dict]:
         r = Reg2es(self.input_path)
-        generator = r.gen_records(self.multiprocess, self.chunk_size) if self.is_quiet else tqdm(r.gen_records(self.multiprocess, self.chunk_size))
+        generator = r.gen_records() if self.is_quiet else tqdm(r.gen_records())
 
-        buffer: List[List[dict]] = generator
+        buffer: List[dict] = generator
         return buffer
 
     def bulk_import(self):

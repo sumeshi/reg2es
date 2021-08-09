@@ -16,21 +16,17 @@ class Reg2jsonPresenter(object):
         input_path: str,
         output_path: str,
         is_quiet: bool = False,
-        multiprocess: bool = False,
-        chunk_size: int = 500
     ):
         self.input_path = Path(input_path).resolve()
         self.output_path = output_path if output_path else Path(self.input_path).with_suffix('.json')
         self.is_quiet = is_quiet
-        self.multiprocess = multiprocess
-        self.chunk_size = chunk_size
 
     def reg2json(self) -> List[dict]:
         r = Reg2es(self.input_path)
-        generator = r.gen_records(self.multiprocess, self.chunk_size) if self.is_quiet else tqdm(r.gen_records(self.multiprocess, self.chunk_size))
+        generator = r.gen_records() if self.is_quiet else tqdm(r.gen_records())
 
-        buffer: List[dict] = list(chain.from_iterable(generator))
-        return buffer
+        buffer: List[dict] = list(generator)
+        return buffer[0]
 
     def export_json(self):
         self.output_path.write_text(

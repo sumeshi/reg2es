@@ -1,7 +1,6 @@
 # coding: utf-8
 from typing import List
 from pathlib import Path
-from multiprocessing import cpu_count
 
 from reg2es.views.BaseView import BaseView
 from reg2es.presenters.Reg2esPresenter import Reg2esPresenter 
@@ -45,9 +44,6 @@ class Reg2esView(BaseView):
         view = Reg2esView()
         reg_files = self.__list_reg_files(self.args.reg_files)
 
-        if self.args.multiprocess:
-            view.log(f"Multi-Process: {cpu_count()}", self.args.quiet)
-
         for reg_file in reg_files:
             view.log(f"Currently Importing {reg_file}.", self.args.quiet)
 
@@ -63,8 +59,6 @@ class Reg2esView(BaseView):
                     login=self.args.login,
                     pwd=self.args.pwd,
                     is_quiet=self.args.quiet,
-                    multiprocess=self.args.multiprocess,
-                    chunk_size=int(self.args.size),
                 ).bulk_import()
             except Exception as e:
                 print('ImportError: ', reg_file)
