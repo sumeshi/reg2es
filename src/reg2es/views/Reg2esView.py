@@ -28,6 +28,7 @@ class Reg2esView(BaseView):
         self.parser.add_argument("--pipeline", default="", help="Ingest pipeline to use")
         self.parser.add_argument("--login", default="", help="Login to use to connect to Elastic database")
         self.parser.add_argument("--pwd", default="", help="Password associated with the login")
+        self.parser.add_argument("--fields-limit", default=10000, help="index.mapping.total_fields.limit settings")
     
     def __list_reg_files(self, reg_files: List[str]) -> List[Path]:
         # TODO: verify filename
@@ -59,6 +60,7 @@ class Reg2esView(BaseView):
                     login=self.args.login,
                     pwd=self.args.pwd,
                     is_quiet=self.args.quiet,
+                    fields_limit=self.args.fields_limit
                 ).bulk_import()
             except Exception as e:
                 print('ImportError: ', reg_file)

@@ -23,6 +23,7 @@ class Reg2esPresenter(object):
         login: str = "",
         pwd: str = "",
         is_quiet: bool = False,
+        fields_limit: int = 10000,
     ):
         self.input_path = input_path
         self.host = host
@@ -33,6 +34,7 @@ class Reg2esPresenter(object):
         self.login = login
         self.pwd = pwd
         self.is_quiet = is_quiet
+        self.fields_limit = fields_limit
 
     def reg2es(self) -> List[dict]:
         r = Reg2es(self.input_path)
@@ -52,6 +54,6 @@ class Reg2esPresenter(object):
 
         for records in self.reg2es():
             try:
-                es.bulk_indice(records, self.index, self.pipeline)
+                es.bulk_indice(records, self.index, self.pipeline, self.fields_limit)
             except Exception:
                 traceback.print_exc()

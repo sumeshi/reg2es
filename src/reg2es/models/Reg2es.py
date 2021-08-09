@@ -55,10 +55,10 @@ def get_all_hives(reg: pyregf.key) -> dict:
     subtree = dict()
     if reg.sub_keys:
         for r in reg.sub_keys:
-            subtree[r.get_name()] = {**{"meta": {"last_written_time": r.get_last_written_time().isoformat()}}, **get_all_hives(r)}
+            subtree[r.get_name().lstrip('.')] = {**{"meta": {"last_written_time": r.get_last_written_time().isoformat()}}, **get_all_hives(r)}
     
     values = {
-            v.get_name() if v.get_name() else "_": {
+            v.get_name().lstrip('.') if v.get_name() else "_": {
                 "type": v.get_type(),
                 "identifier": get_data_type_identifier(v.get_type()),
                 "size": v.get_data_size(),
