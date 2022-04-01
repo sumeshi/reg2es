@@ -236,6 +236,6 @@ Please report issues and feature requests. :sushi: :sushi: :sushi:
 
 ## License
 
-reg2es is released under the [MIT](https://github.com/sumeshi/reg2es/blob/master/LICENSE) License.
+reg2es is released under the [LGPLv3+](https://github.com/sumeshi/reg2es/blob/master/LICENSE) License.
 
 Powered by [libregf](https://github.com/libyal/libregf).
