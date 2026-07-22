@@ -319,7 +319,9 @@ def test_recovery_metadata_is_added_to_documents() -> None:
     ):
         chunks = list(runner.gen_records())
 
-    assert chunks[0][0]["log"]["file"]["path"] == "/host/SYSTEM"
+    assert chunks[0][0]["log"]["file"]["path"] == str(
+        Path("/host/SYSTEM").resolve()
+    )
     assert chunks[0][0]["reg2es"]["recovery"] == recovery
 
 
@@ -389,7 +391,7 @@ def test_plugin_result_conversion_is_ecs_shaped_and_lossless() -> None:
     payload = orjson.dumps(document)
     assert "端末一号".encode() in payload
     assert orjson.loads(payload)["reg2es"]["custom"]["label"] == "端末一号"
-    assert document["log"]["file"]["path"] == "/host/SYSTEM"
+    assert document["log"]["file"]["path"] == str(Path("/host/SYSTEM").resolve())
     assert document["reg2es"]["source"] == {
         "hive": "SYSTEM",
         "key_path": "\\ROOT\\Control\\Test",

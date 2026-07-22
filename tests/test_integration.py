@@ -168,6 +168,7 @@ def test_bulk_import_reports_failures_instead_of_succeeding() -> None:
 
 
 def test_public_api_accepts_single_path_and_propagates_options() -> None:
+    expected_path = Path("/host/SYSTEM").resolve()
     presenter = MagicMock()
     with patch(
         "reg2es.presenters.Reg2esPresenter.Reg2esPresenter",
@@ -181,7 +182,7 @@ def test_public_api_accepts_single_path_and_propagates_options() -> None:
         )
 
     kwargs = presenter_class.call_args.kwargs
-    assert kwargs["input_paths"] == [Path("/host/SYSTEM")]
+    assert kwargs["input_paths"] == [expected_path]
     assert kwargs["plugin_names"] == ["services"]
     assert kwargs["additional_tags"] == ["case-1"]
     assert kwargs["verify_certs"] is False
@@ -190,10 +191,11 @@ def test_public_api_accepts_single_path_and_propagates_options() -> None:
 
 def test_public_reg2json_accepts_single_path_and_adds_tags() -> None:
     document = {"tags": ["registry", "case-1"]}
+    expected_path = Path("/host/SYSTEM").resolve()
 
     class FakeRunner:
         def __init__(self, **kwargs):
-            assert kwargs["input_paths"] == [Path("/host/SYSTEM")]
+            assert kwargs["input_paths"] == [expected_path]
             assert kwargs["additional_tags"] == ["case-1"]
 
         def gen_records(self):

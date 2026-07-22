@@ -4,7 +4,7 @@
 
 # Plugin written by Tim Taylor, timtaylor3@yahoo.com
 import struct
-from datetime import datetime
+from datetime import datetime, timezone
 
 from Registry.RegistryParse import parse_windows_timestamp
 
@@ -60,7 +60,9 @@ class Plugin(BasePlugin):
                 if v.name() == "InstallDate":
                     res = PluginResult(key=key, value=v)
                     install_date = (
-                        datetime.utcfromtimestamp(v.value()).isoformat("T") + "Z"
+                        datetime.fromtimestamp(v.value(), tz=timezone.utc)
+                        .isoformat("T")
+                        .replace("+00:00", "Z")
                     )
                     res.custom["value"] = "Install Date:\t\t{0}".format(install_date)
                     yield res
