@@ -1,13 +1,12 @@
 # coding: utf-8
-from typing import List
 from pathlib import Path
+from typing import List, Optional
 
 from reg2es.views.BaseView import BaseView
-from reg2es.presenters.Reg2esPresenter import Reg2esPresenter 
+from reg2es.presenters.Reg2esPresenter import Reg2esPresenter
 
 
 class Reg2esView(BaseView):
-
     def __init__(self):
         super().__init__()
         self.define_options()
@@ -16,57 +15,87 @@ class Reg2esView(BaseView):
     def define_options(self):
         self.parser.add_argument(
             "reg_files",
-            nargs="+",
+            nargs="*",
             type=str,
-            help="Windows NT Registry or directories containing them.",
+            help="Windows NT Registry files or directories containing them.",
+        )
+        self.parser.add_argument(
+            "--host", default="localhost", help="Elasticsearch host"
+        )
+        self.parser.add_argument(
+            "--port", default=9200, type=int, help="Elasticsearch port number"
+        )
+        self.parser.add_argument("--index", default="reg2es", help="Index name")
+        self.parser.add_argument(
+            "--scheme", default="http", help="Scheme to use (http, https)"
+        )
+        self.parser.add_argument(
+            "--pipeline", default="", help="Ingest pipeline to use"
+        )
+        self.parser.add_argument(
+            "--login", default="", help="Login for Elasticsearch authentication"
+        )
+        self.parser.add_argument(
+            "--pwd", default="", help="Password for Elasticsearch authentication"
+        )
+        self.parser.add_argument(
+            "--no-verify-certs",
+            action="store_true",
+            help="Disable TLS certificate verification for Elasticsearch.",
         )
 
-        self.parser.add_argument("--host", default="localhost", help="ElasticSearch host")
-        self.parser.add_argument("--port", default=9200, help="ElasticSearch port number")
-        self.parser.add_argument("--index", default="reg2es", help="Index name")
-        self.parser.add_argument("--scheme", default="http", help="Scheme to use (http, https)")
-        self.parser.add_argument("--pipeline", default="", help="Ingest pipeline to use")
-        self.parser.add_argument("--login", default="", help="Login to use to connect to Elastic database")
-        self.parser.add_argument("--pwd", default="", help="Password associated with the login")
-        self.parser.add_argument("--fields-limit", default=10000, help="index.mapping.total_fields.limit settings")
-    
-    def __list_reg_files(self, reg_files: List[str]) -> List[Path]:
-        # TODO: verify filename
-        reg_path_list = list()
+    def __collect_input_files(self, reg_files: List[str]) -> List[Path]:
+        """Collect all input paths, expanding directories."""
+        paths: List[Path] = []
         for reg_file in reg_files:
-            if Path(reg_file).is_dir():
-                reg_path_list.extend(Path(reg_file).glob("**/*"))
+            p = Path(reg_file)
+            if p.is_dir():
+                paths.extend(f for f in p.rglob("*") if f.is_file())
+            elif p.is_file():
+                paths.append(p)
             else:
-                reg_path_list.append(Path(reg_file))
-
-        return reg_path_list
+                self.log(
+                    f"Warning: {reg_file} does not exist, skipping.",
+                    self.args.quiet,
+                )
+        return paths
 
     def run(self):
-        view = Reg2esView()
-        reg_files = self.__list_reg_files(self.args.reg_files)
+        if self.list_plugins():
+            return
+        if not self.args.reg_files:
+            self.parser.error("at least one registry file or directory is required")
 
-        for reg_file in reg_files:
-            view.log(f"Currently Importing {reg_file}.", self.args.quiet)
+        input_files = self.__collect_input_files(self.args.reg_files)
 
-            # TODO: verify filename before processing
-            try:
-                Reg2esPresenter(
-                    input_path=reg_file,
-                    host=self.args.host,
-                    port=int(self.args.port),
-                    index=self.args.index,
-                    scheme=self.args.scheme,
-                    pipeline=self.args.pipeline,
-                    login=self.args.login,
-                    pwd=self.args.pwd,
-                    is_quiet=self.args.quiet,
-                    fields_limit=self.args.fields_limit
-                ).bulk_import()
-            except Exception as e:
-                print('ImportError: ', reg_file)
-                print(e)
+        if not input_files:
+            self.parser.error("no readable input files found")
 
-        view.log("Import completed.", self.args.quiet)
+        self.log(
+            f"Processing {len(input_files)} file(s) as 1 dataset.", self.args.quiet
+        )
+
+        verify_certs = not getattr(self.args, "no_verify_certs", False)
+        plugins: Optional[List[str]] = getattr(self.args, "plugins", None)
+
+        Reg2esPresenter(
+            input_paths=input_files,
+            host=self.args.host,
+            port=self.args.port,
+            index=self.args.index,
+            scheme=self.args.scheme,
+            pipeline=self.args.pipeline,
+            login=self.args.login,
+            pwd=self.args.pwd,
+            is_quiet=self.args.quiet,
+            chunk_size=self.args.size,
+            plugin_names=plugins,
+            additional_tags=self.parse_tags(),
+            verify_certs=verify_certs,
+            logger=self.log,
+        ).bulk_import()
+
+        self.log("Import completed.", self.args.quiet)
 
 
 def entry_point():

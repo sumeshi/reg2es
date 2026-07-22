@@ -1,15 +1,26 @@
 # coding: utf-8
-from typing import List
+from itertools import chain
 from pathlib import Path
+from typing import List, Optional, Sequence
 
 from reg2es.models.Reg2es import Reg2es
-from reg2es.presenters.Reg2esPresenter import Reg2esPresenter
+
+PathInput = str | Path | Sequence[str | Path]
 
 
-# for use via python-script!
+def _normalize_paths(input_paths: PathInput) -> List[Path]:
+    """Normalize a single path or path sequence without iterating strings."""
+    if isinstance(input_paths, (str, Path)):
+        values = [input_paths]
+    else:
+        values = list(input_paths)
+    if not values:
+        raise ValueError("at least one registry path is required")
+    return [Path(value).resolve() for value in values]
+
 
 def reg2es(
-    input_path: str,
+    input_paths: PathInput,
     host: str = "localhost",
     port: int = 9200,
     index: str = "reg2es",
@@ -17,40 +28,33 @@ def reg2es(
     pipeline: str = "",
     login: str = "",
     pwd: str = "",
-    fields_limit: int = 10000,
+    chunk_size: int = 500,
+    plugin_names: Optional[List[str]] = None,
+    additional_tags: Optional[List[str]] = None,
+    verify_certs: bool = True,
 ) -> None:
     """Fast import of Windows NT Registry(REGF) into Elasticsearch.
+
     Args:
-        input_path (str):
-            Windows NT Registries to import into Elasticsearch.
-
-        host (str, optional):
-            Elasticsearch host address. Defaults to "localhost".
-
-        port (int, optional):
-            Elasticsearch port number. Defaults to 9200.
-
-        index (str, optional):
-            Name of the index to create. Defaults to "reg2es".
-
-        scheme (str, optional):
-            Elasticsearch address scheme. Defaults to "http".
-
-        pipeline (str, optional):
-            Elasticsearch Ingest Pipeline. Defaults to "".
-
-        login (str, optional):
-            Elasticsearch login to connect into.
-
-        pwd (str, optional):
-            Elasticsearch password associated with the login provided.
-
-        fields_limit(int, optional):
-            index.mapping.total_fields.limit settings. Defaults to 10000.
+        input_paths: Paths to registry hive files.
+        host: Elasticsearch host address.
+        port: Elasticsearch port number.
+        index: Name of the index to create.
+        scheme: Elasticsearch address scheme.
+        pipeline: Elasticsearch Ingest Pipeline.
+        login: Elasticsearch login.
+        pwd: Elasticsearch password.
+        chunk_size: Number of documents per bulk request.
+        plugin_names: Plugin names to run (None for all compatible).
+        additional_tags: Extra tags for each record.
+        verify_certs: Whether to verify TLS certificates.
     """
+    from reg2es.presenters.Reg2esPresenter import Reg2esPresenter
 
-    mp = Reg2esPresenter(
-        input_path=Path(input_path),
+    paths = _normalize_paths(input_paths)
+
+    Reg2esPresenter(
+        input_paths=paths,
         host=host,
         port=int(port),
         index=index,
@@ -59,21 +63,41 @@ def reg2es(
         login=login,
         pwd=pwd,
         is_quiet=True,
-        fields_limit=fields_limit,
+        chunk_size=chunk_size,
+        plugin_names=plugin_names,
+        additional_tags=additional_tags,
+        verify_certs=verify_certs,
     ).bulk_import()
 
 
-def reg2json(filepath: str) -> dict:
-    """Convert Windows NT Registry to dict.
+def reg2json(
+    input_paths: PathInput,
+    chunk_size: int = 500,
+    plugin_names: Optional[List[str]] = None,
+    additional_tags: Optional[List[str]] = None,
+) -> List[dict]:
+    """Convert Windows NT Registry to list of ECS-formatted dicts.
 
     Args:
-        filepath (str): Input Registry file.
+        input_paths: Input registry hive files.
+        chunk_size: Internal chunk size for processing.
+        plugin_names: Plugin names to run (None for all compatible).
+        additional_tags: Extra tags for each record.
 
-    Note:
-        Since the content of the file is loaded into memory at once,
-        it requires the same amount of memory as the file to be loaded.
+    Returns:
+        List of registry records in ECS format.
     """
-    reg = Reg2es(Path(filepath).resolve())
-    record: dict = reg.gen_records()
+    paths = _normalize_paths(input_paths)
 
-    return record[0]
+    r = Reg2es(
+        input_paths=paths,
+        plugin_names=plugin_names,
+        chunk_size=chunk_size,
+        additional_tags=additional_tags,
+    )
+    try:
+        records: List[dict] = list(chain.from_iterable(r.gen_records()))
+    finally:
+        r.close()
+
+    return records

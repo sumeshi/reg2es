@@ -58,8 +58,12 @@ jobs:
       - name: rename asset
         if: startsWith(github.ref, 'refs/heads/master')
         run: |
-          mv dist/reg2es.exe dist/reg2es-windows-x64-v${{ steps.create_tag.outputs.version }}.exe
-          mv dist/reg2json.exe dist/reg2json-windows-x64-v${{ steps.create_tag.outputs.version }}.exe
+          bundle="dist/reg2es-windows-x64-v${{ steps.create_tag.outputs.version }}"
+          mkdir -p "$bundle/licenses"
+          mv dist/reg2es.exe "$bundle/"
+          mv dist/reg2json.exe "$bundle/"
+          uv run python .github/collect_runtime_licenses.py "$bundle/licenses"
+          python -c "import shutil; shutil.make_archive(r'$bundle', 'zip', root_dir=r'$bundle')"
         shell: bash
 
       - name: create release
@@ -68,8 +72,7 @@ jobs:
         with:
           tag_name: v${{ steps.create_tag.outputs.version }}
           files: |
-            dist/reg2es-windows-x64-v${{ steps.create_tag.outputs.version }}.exe
-            dist/reg2json-windows-x64-v${{ steps.create_tag.outputs.version }}.exe
+            dist/reg2es-windows-x64-v${{ steps.create_tag.outputs.version }}.zip
           name: Release v${{ steps.create_tag.outputs.version }}
           body: 'This release was automatically created by GitHub Actions.'
         env:
@@ -115,8 +118,12 @@ jobs:
       - name: rename asset
         if: startsWith(github.ref, 'refs/heads/master')
         run: |
-          mv dist/reg2es dist/reg2es-linux-x64-v${{ needs.build-windows.outputs.version }}
-          mv dist/reg2json dist/reg2json-linux-x64-v${{ needs.build-windows.outputs.version }}
+          bundle="dist/reg2es-linux-x64-v${{ needs.build-windows.outputs.version }}"
+          mkdir -p "$bundle/licenses"
+          mv dist/reg2es "$bundle/"
+          mv dist/reg2json "$bundle/"
+          uv run python .github/collect_runtime_licenses.py "$bundle/licenses"
+          python -c "import shutil; shutil.make_archive(r'$bundle', 'zip', root_dir=r'$bundle')"
         shell: bash
 
       - name: upload asset to release
@@ -125,7 +132,6 @@ jobs:
         with:
           tag_name: v${{ needs.build-windows.outputs.version }}
           files: |
-            dist/reg2es-linux-x64-v${{ needs.build-windows.outputs.version }}
-            dist/reg2json-linux-x64-v${{ needs.build-windows.outputs.version }}
+            dist/reg2es-linux-x64-v${{ needs.build-windows.outputs.version }}.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

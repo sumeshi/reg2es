@@ -5,9 +5,14 @@
 
 ![reg2es logo](https://gist.githubusercontent.com/sumeshi/c2f430d352ae763273faadf9616a29e5/raw/bd51b2539d8bb639d4f630ef13639706bed1f905/reg2es.svg)
 
-A command-line tool and Python library for parsing Windows NT Registry (REGF) and importing the results into Elasticsearch.
+A command-line tool and Python library for extracting forensic artifacts from
+Windows NT Registry (REGF) hives and importing them into Elasticsearch.
 
-**reg2es** leverages the [regrippy](https://github.com/airbus-cert/regrippy) framework for flexible and extensible registry parsing.
+The 38 bundled plugins are ported from
+[airbus-cert/regrippy](https://github.com/airbus-cert/regrippy). `reg2es` runs
+standalone and does not require the `regrippy` package at runtime. Both
+`reg2es` and `reg2json` consume the same plugin runner and emit the same
+ECS-oriented documents.
 
 
 ## Usage
@@ -15,28 +20,31 @@ A command-line tool and Python library for parsing Windows NT Registry (REGF) an
 **reg2es** can be used as a standalone command-line tool or integrated directly into your Python scripts.
 
 ```bash
-$ reg2es /path/to/your/file.DAT
+reg2es SYSTEM SOFTWARE SAM
+reg2json NTUSER.DAT -o artifacts.json
 ```
 
 ```python
 from reg2es import reg2es
 
-reg2es('/path/to/your/file.DAT')
+reg2es(["SYSTEM", "SOFTWARE", "SAM"])
 ```
 
 
 ### Arguments
 
-**reg2es** can process multiple files at once:
+Multiple inputs passed in one invocation form one registry dataset. This lets
+plugins such as `localgroups` enrich SAM results using SOFTWARE data, regardless
+of the order of input paths.
 
 ```bash
-$ reg2es NTUSER.DAT SYSTEM SAM
+reg2es SAM SOFTWARE
 ```
 
 reg2es can recursively process all registry files under a specified directory:
 
 ```bash
-$ tree .
+tree .
 regfiles/
   ├── NTUSER.DAT
   ├── NTUSER.MAN
@@ -47,45 +55,23 @@ regfiles/
       ├── SYSTEM
       └── UsrClass.dat
 
-$ reg2es /regfiles/ # This recursively processes all registry files.
+reg2es /regfiles/ # Recursively collects files as one dataset.
 ```
 
 
-### Options
+### Common options
 
-```
---version, -v
+- `--plugin NAME`: run one plugin; repeat to select several. By default, all
+  plugins compatible with the supplied hives run.
+- `--list-plugins`: print the 38 bundled plugins and exit.
+- `--size N`: set the generated/indexed chunk size (default: 500).
+- `--tags tag1,tag2`: add tags to every document.
+- `--quiet`: suppress progress output.
 
---help, -h
-
---quiet, -q
-  Suppress standard output
-  (default: False)
-
---host:
-  Elasticsearch host address (default: localhost)
-
---port:
-  Elasticsearch port number (default: 9200)
-
---index:
-  Destination index name (default: reg2es)
-
---scheme:
-  Protocol scheme to use (http or https) (default: http)
-
---pipeline:
-  Elasticsearch Ingest Pipeline to use (default: )
-
---login:
-  Username for Elasticsearch authentication
-
---pwd:
-  Password for Elasticsearch authentication
-
---fields-limit:
-  index.mapping.total_fields.limit settings (default: 10000)
-```
+`reg2es` additionally accepts Elasticsearch connection options including
+`--host`, `--port`, `--index`, `--scheme`, `--pipeline`, `--login`, `--pwd`,
+and `--no-verify-certs`. Run `reg2es --help` or `reg2json --help` for the full
+current interface.
 
 
 ### Examples
@@ -93,19 +79,25 @@ $ reg2es /regfiles/ # This recursively processes all registry files.
 When using from the command line:
 
 ```bash
-$ reg2es /path/to/your/file.DAT --host=localhost --port=9200 --index=foobar
+reg2es SYSTEM --plugin services --host localhost --index registry-artifacts
 ```
 
 When using from a Python script:
 
 ```py
-reg2es('/path/to/your/file.DAT', host='localhost', port=9200, index='foobar')
+reg2es(
+    ["SYSTEM", "SOFTWARE"],
+    host="localhost",
+    index="registry-artifacts",
+    plugin_names=["services", "systeminfo"],
+    additional_tags=["host-01", "case-42"],
+)
 ```
 
 With credentials for Elastic Security:
 
 ```bash
-$ reg2es /path/to/your/file.DAT --host=localhost --port=9200 --index=foobar --login=elastic --pwd=******
+reg2es SYSTEM --login elastic --pwd '******'
 ```
 
 
@@ -116,60 +108,56 @@ $ reg2es /path/to/your/file.DAT --host=localhost --port=9200 --index=foobar --lo
 **reg2es** also includes `reg2json`, a command-line tool for converting Windows NT Registry into JSON files. :sushi: :sushi: :sushi:
 
 ```bash
-$ reg2json /path/to/your/file.DAT /path/to/output/target.json
+reg2json NTUSER.DAT --plugin userassist -o artifacts.json
 ```
 
-You can also convert registry files directly into a Python `dict` object:
+You can also convert registry files directly into a Python `List[dict]` object:
 
 ```python
 from reg2es import reg2json
 
-result: dict = reg2json('/path/to/your/file.DAT')
+result: list[dict] = reg2json(
+    ["SOFTWARE", "SAM"],
+    plugin_names=["localgroups"],
+    additional_tags=["host-01"],
+)
 ```
 
 
 ## Output Format Example
 
+Each plugin result becomes one document. Common ECS fields describe the event,
+registry artifact, source hive, and tags. Lossless plugin-specific data is kept
+under `reg2es.custom` and `reg2es.value_data`.
+
 ```json
 {
-  "ROOT": {
-    "AppEvents": {
-      "meta": {
-        "last_written_time": "2015-10-30T07:24:57.814133"
-      },
-      "EventLabels": {
-        "meta": {
-          "last_written_time": "2015-10-30T07:25:51.735838"
-        },
-        "Default": {
-          "meta": {
-            "last_written_time": "2015-10-30T07:24:57.861009"
-          },
-          "_": {
-            "type": 1,
-            "identifier": "REG_SZ",
-            "size": 26,
-            "data": "Default Beep"
-          }
-        }
-      }
+  "@timestamp": "2015-10-30T07:24:57.814133+00:00",
+  "event": {
+    "kind": "event",
+    "category": ["registry"],
+    "type": ["info"],
+    "action": "compname"
+  },
+  "registry": {
+    "hive": "SYSTEM",
+    "path": "ControlSet001\\Control\\ComputerName\\ComputerName",
+    "key": "ComputerName",
+    "value": "ComputerName",
+    "data": {
+      "type": "RegSZ",
+      "strings": ["DESKTOP-EXAMPLE"]
     }
+  },
+  "log": {
+    "file": {"path": "/evidence/SYSTEM"}
+  },
+  "tags": ["registry", "host-01"],
+  "reg2es": {
+    "plugin": {"name": "compname"},
+    "value_data": "DESKTOP-EXAMPLE"
   }
 }
-```
-
-
-## Known Issues
-
-```
-elasticsearch.exceptions.RequestError: RequestError(400, 'illegal_argument_exception', 'Limit of total fields [1000] in index [reg2es] has been exceeded')
-```
-
-Windows NT Registry has a large number of elements per document and is caught in the initial value of the limit.
-Therefore, please use the `--fields-limit` (default: 10000) option to remove the limit.
-
-```bash
-$ reg2es --fields-limit 10000 NTUSER.DAT
 ```
 
 
@@ -209,6 +197,25 @@ Please report issues and feature requests. :sushi: :sushi: :sushi:
 
 ## License
 
-Released under the [MIT](LICENSE) License.
+**reg2es** is released under the [MIT](LICENSE) License.
 
-Powered by [regrippy](https://github.com/airbus-cert/regrippy).
+### Third-Party Notices
+
+This product includes code derived from [regrippy](https://github.com/airbus-cert/regrippy)
+v2.0.3 by Airbus CERT, licensed under Apache License 2.0.
+
+- Repository: <https://github.com/airbus-cert/regrippy>
+- Commit: `32e3ab3243415b7bf46f812d933f4d29862e3046`
+- Vendored components:
+  - `src/reg2es/plugins/base.py` — BasePlugin, PluginResult, mactime
+  - `src/reg2es/plugins/*.py` — 38 registry analysis plugins
+  - `src/reg2es/plugins/shimcache.py` — Shim Cache plugin with its parser
+    (original copyright: Andrew Davis, andrew.davis@mandiant.com, Mandiant 2012)
+- Modifications: import paths changed from `regrippy` to `reg2es.plugins` and
+  the formerly separate Shim Cache parser was integrated into its plugin.
+  Unused upstream CLI display helpers were removed; artifact extraction logic
+  remains unchanged.
+- Full license text: [LICENSES/Apache-2.0.txt](LICENSES/Apache-2.0.txt)
+
+We gratefully thank the maintainers and contributors of regrippy,
+python-registry, and the other open-source projects that make reg2es possible.
