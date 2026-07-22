@@ -1,0 +1,131 @@
+name: publish-release
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.create_tag.outputs.version }}
+    strategy:
+      matrix:
+        python-version: ['3.13']
+    steps:
+      - name: checkout
+        uses: actions/checkout@v3
+
+      - name: install python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+      
+      - name: Install dependencies
+        run: |
+          pip install uv
+          uv sync
+
+      - name: run python
+        run: |
+          uv run reg2es -h
+          uv run reg2json -h
+      
+      - name: build
+        run: |
+          pip install nuitka
+          uv run python -m nuitka --standalone --onefile --follow-imports --include-distribution-metadata=reg2es --enable-plugin=multiprocessing --no-deployment-flag=self-execution -o reg2es.exe --output-dir=dist --assume-yes-for-downloads src/reg2es/views/Reg2esView.py
+          uv run python -m nuitka --standalone --onefile --follow-imports --include-distribution-metadata=reg2es --enable-plugin=multiprocessing --no-deployment-flag=self-execution -o reg2json.exe --output-dir=dist --assume-yes-for-downloads src/reg2es/views/Reg2jsonView.py
+      
+      - name: verify
+        run: |
+          dist/reg2es.exe --version
+          dist/reg2json.exe --version
+      
+      - name: create tag
+        id: create_tag
+        if: startsWith(github.ref, 'refs/heads/master')
+        run: |
+          version=$(grep '__version__' src/reg2es/__about__.py | awk -F '"' '{print $2}')
+          git tag "v$version"
+          git push origin "v$version"
+          echo "version=$version" >> $GITHUB_OUTPUT
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+
+      - name: rename asset
+        if: startsWith(github.ref, 'refs/heads/master')
+        run: |
+          mv dist/reg2es.exe dist/reg2es-windows-x64-v${{ steps.create_tag.outputs.version }}.exe
+          mv dist/reg2json.exe dist/reg2json-windows-x64-v${{ steps.create_tag.outputs.version }}.exe
+        shell: bash
+
+      - name: create release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/heads/master')
+        with:
+          tag_name: v${{ steps.create_tag.outputs.version }}
+          files: |
+            dist/reg2es-windows-x64-v${{ steps.create_tag.outputs.version }}.exe
+            dist/reg2json-windows-x64-v${{ steps.create_tag.outputs.version }}.exe
+          name: Release v${{ steps.create_tag.outputs.version }}
+          body: 'This release was automatically created by GitHub Actions.'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-linux:
+    needs: build-windows
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        python-version: ['3.13']
+    steps:
+      - name: checkout
+        uses: actions/checkout@v3
+
+      - name: install python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+      
+      - name: Install dependencies
+        run: |
+          sudo apt install patchelf
+          pip install uv
+          uv sync
+
+      - name: run python
+        run: |
+          uv run reg2es -h
+          uv run reg2json -h
+
+      - name: build
+        run: |
+          pip install nuitka
+          uv run python -m nuitka --standalone --onefile --follow-imports --include-distribution-metadata=reg2es --enable-plugin=multiprocessing --no-deployment-flag=self-execution -o reg2es --output-dir=dist --assume-yes-for-downloads src/reg2es/views/Reg2esView.py
+          uv run python -m nuitka --standalone --onefile --follow-imports --include-distribution-metadata=reg2es --enable-plugin=multiprocessing --no-deployment-flag=self-execution -o reg2json --output-dir=dist --assume-yes-for-downloads src/reg2es/views/Reg2jsonView.py
+      
+      - name: verify
+        run: |
+          dist/reg2es --version
+          dist/reg2json --version
+
+      - name: rename asset
+        if: startsWith(github.ref, 'refs/heads/master')
+        run: |
+          mv dist/reg2es dist/reg2es-linux-x64-v${{ needs.build-windows.outputs.version }}
+          mv dist/reg2json dist/reg2json-linux-x64-v${{ needs.build-windows.outputs.version }}
+        shell: bash
+
+      - name: upload asset to release
+        if: startsWith(github.ref, 'refs/heads/master')
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ needs.build-windows.outputs.version }}
+          files: |
+            dist/reg2es-linux-x64-v${{ needs.build-windows.outputs.version }}
+            dist/reg2json-linux-x64-v${{ needs.build-windows.outputs.version }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
