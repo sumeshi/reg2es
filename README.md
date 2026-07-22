@@ -239,12 +239,11 @@ This product includes code derived from [regrippy](https://github.com/airbus-cer
 v2.0.3 by Airbus CERT, licensed under Apache License 2.0.
 
 - Repository: <https://github.com/airbus-cert/regrippy>
-- Commit: `32e3ab3243415b7bf46f812d933f4d29862e3046`
 - Vendored components:
   - `src/reg2es/plugins/base.py` — BasePlugin, PluginResult, mactime
   - `src/reg2es/plugins/*.py` — 38 registry analysis plugins
   - `src/reg2es/plugins/shimcache.py` — Shim Cache plugin with its parser
-    (original copyright: Andrew Davis, andrew.davis@mandiant.com, Mandiant 2012)
+    (original copyright: Andrew Davis, Mandiant 2012)
 - Modifications: import paths changed from `regrippy` to `reg2es.plugins` and
   the formerly separate Shim Cache parser was integrated into its plugin.
   Unused upstream CLI display helpers were removed; artifact extraction logic
