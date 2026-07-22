@@ -88,6 +88,23 @@ def is_transaction_log(path: Path) -> bool:
     return path.name.upper().endswith(_TRANSACTION_LOG_SUFFIXES)
 
 
+_REGF_MAGIC = b"regf"
+
+
+def looks_like_registry_hive(path: Path) -> bool:
+    """Return whether *path* starts with the REGF magic of a registry hive.
+
+    Directory scans can pick up unrelated files (previous JSON exports, thumbs,
+    etc.).  Those are not registry hives and must be skipped instead of aborting
+    the whole run when the REGF header cannot be parsed.
+    """
+    try:
+        with path.open("rb") as handle:
+            return handle.read(4) == _REGF_MAGIC
+    except OSError:
+        return False
+
+
 def _find_transaction_logs(primary_path: Path) -> List[Path]:
     """Find transaction logs next to a primary hive without case assumptions."""
     expected = {
@@ -281,7 +298,8 @@ def resolve_plugin_names(
     """Validate and resolve plugin names against discovered plugins.
 
     Args:
-        names: Requested plugin names (module basenames), or None for all.
+        names: Requested plugin names (module basenames), or None for the
+            default-enabled plugins.
         all_plugins: Full discovered plugin list.
 
     Returns:
@@ -291,7 +309,11 @@ def resolve_plugin_names(
         ValueError: If a requested name does not match any discovered plugin.
     """
     if names is None:
-        return list(all_plugins)
+        return [
+            (name, cls)
+            for name, cls in all_plugins
+            if getattr(cls, "__DEFAULT_ENABLED__", True)
+        ]
 
     lookup = {name: cls for name, cls in all_plugins}
     resolved: List[Tuple[str, Type[BasePlugin]]] = []
@@ -395,6 +417,52 @@ def _timestamp_to_iso(value: Any) -> Optional[str]:
         return None
 
 
+_ECS_HKLM_HIVES = {
+    "BCD",
+    "COMPONENTS",
+    "SAM",
+    "SCHEMA",
+    "SECURITY",
+    "SETTINGS",
+    "SOFTWARE",
+    "SYSTEM",
+}
+
+
+def _join_registry_path(*parts: Optional[str]) -> str:
+    return "\\".join(part.strip("\\") for part in parts if part)
+
+
+def _ecs_registry_location(
+    hive_name: str, plugin_path: Optional[str]
+) -> Tuple[str, str, str]:
+    """Map an offline hive path to ECS ``registry.hive/key/path`` fields."""
+    relative_path = (plugin_path or "").strip("\\")
+    if relative_path == "ROOT":
+        relative_path = ""
+    elif relative_path.startswith("ROOT\\"):
+        relative_path = relative_path[5:]
+
+    if hive_name in _ECS_HKLM_HIVES:
+        ecs_hive = "HKLM"
+        key = _join_registry_path(hive_name, relative_path)
+    elif hive_name == "NTUSER.DAT":
+        ecs_hive = "HKCU"
+        key = relative_path
+    elif hive_name == "UsrClass.DAT":
+        ecs_hive = "HKCU"
+        key = _join_registry_path("Software\\Classes", relative_path)
+    elif hive_name == "DEFAULT":
+        ecs_hive = "HKU"
+        key = _join_registry_path(".DEFAULT", relative_path)
+    else:
+        # Keep uncommon/custom hive identifiers useful without inventing a
+        # Windows mount point that is not known from the hive file alone.
+        ecs_hive = hive_name
+        key = relative_path
+    return ecs_hive, key, _join_registry_path(ecs_hive, key)
+
+
 def plugin_result_to_document(
     result: PluginResult,
     plugin_name: str,
@@ -410,8 +478,10 @@ def plugin_result_to_document(
     # Timestamp: prefer mtime, fallback to btime.
     timestamp = _timestamp_to_iso(result.mtime) or _timestamp_to_iso(result.btime)
 
+    registry_hive, registry_key, registry_path = _ecs_registry_location(
+        hive_name, result.path
+    )
     doc: dict = {
-        "@timestamp": timestamp,
         "event": {
             "kind": "event",
             "category": ["registry"],
@@ -419,9 +489,9 @@ def plugin_result_to_document(
             "action": plugin_name,
         },
         "registry": {
-            "hive": hive_name,
-            "path": result.path,
-            "key": result.key_name if hasattr(result, "key_name") else None,
+            "hive": registry_hive,
+            "key": registry_key,
+            "path": registry_path,
         },
         "log": {
             "file": {
@@ -435,8 +505,11 @@ def plugin_result_to_document(
         ),
         "reg2es": {
             "plugin": {"name": plugin_name},
+            "source": {"hive": hive_name, "key_path": result.path},
         },
     }
+    if timestamp is not None:
+        doc["@timestamp"] = timestamp
 
     # Value fields.
     if result.value_name is not None:
@@ -496,7 +569,15 @@ def _build_hive_dataset(
         Dict mapping canonical hive name -> list of (path, Registry) tuples.
     """
     dataset: Dict[str, List[Tuple[Path, Registry.Registry]]] = {}
-    primary_paths = [path for path in input_paths if not is_transaction_log(path)]
+    candidate_paths = [path for path in input_paths if not is_transaction_log(path)]
+    primary_paths = []
+    for path in candidate_paths:
+        if looks_like_registry_hive(path):
+            primary_paths.append(path)
+        else:
+            logger.warning(
+                "Skipping '%s': not a registry hive (missing REGF header)", path
+            )
     if not primary_paths:
         raise RegistryRecoveryError("No primary registry hive was provided")
     try:
@@ -563,7 +644,7 @@ class Reg2es:
     Args:
         input_paths: One or more paths to registry hive files.
         plugin_names: Optional list of plugin module names to run.
-            None means run all compatible plugins.
+            None means run compatible, default-enabled plugins.
         chunk_size: Number of documents per yielded chunk.
         error_policy: ``"continue"`` (default) logs and skips plugin errors;
             ``"raise"`` re-raises the first exception.

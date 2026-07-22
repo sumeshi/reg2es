@@ -45,7 +45,7 @@ def reg2es(
         login: Elasticsearch login.
         pwd: Elasticsearch password.
         chunk_size: Number of documents per bulk request.
-        plugin_names: Plugin names to run (None for all compatible).
+        plugin_names: Plugin names to run (None for the default-enabled set).
         additional_tags: Extra tags for each record.
         verify_certs: Whether to verify TLS certificates.
     """
@@ -81,7 +81,7 @@ def reg2json(
     Args:
         input_paths: Input registry hive files.
         chunk_size: Internal chunk size for processing.
-        plugin_names: Plugin names to run (None for all compatible).
+        plugin_names: Plugin names to run (None for the default-enabled set).
         additional_tags: Extra tags for each record.
 
     Returns:

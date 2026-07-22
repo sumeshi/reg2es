@@ -4,7 +4,7 @@ from typing import List, Optional
 
 from reg2es.views.BaseView import BaseView
 from reg2es.presenters.Reg2esPresenter import Reg2esPresenter
-from reg2es.models.Reg2es import is_transaction_log
+from reg2es.models.Reg2es import is_transaction_log, looks_like_registry_hive
 
 
 class Reg2esView(BaseView):
@@ -54,7 +54,11 @@ class Reg2esView(BaseView):
                 paths.extend(
                     f
                     for f in p.rglob("*")
-                    if f.is_file() and not is_transaction_log(f)
+                    if (
+                        f.is_file()
+                        and not is_transaction_log(f)
+                        and looks_like_registry_hive(f)
+                    )
                 )
             elif p.is_file():
                 if is_transaction_log(p):
@@ -62,6 +66,11 @@ class Reg2esView(BaseView):
                         f"Warning: {reg_file} is a registry transaction log; "
                         "it will be auto-applied with its primary hive and is "
                         "not processed as a standalone hive.",
+                        self.args.quiet,
+                    )
+                elif not looks_like_registry_hive(p):
+                    self.log(
+                        f"Warning: {reg_file} is not a registry hive, skipping.",
                         self.args.quiet,
                     )
                 else:

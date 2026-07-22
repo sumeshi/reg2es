@@ -111,6 +111,22 @@ reg2es SYSTEM --login elastic --pwd '******'
 reg2json NTUSER.DAT --plugin userassist -o artifacts.json
 ```
 
+Use `--split` to write one JSON array per plugin that produced results. With
+this option, `-o` names an output directory (the current directory is used by
+default):
+
+```bash
+reg2json collected-hives/ --split -o artifacts/
+```
+
+The exhaustive `regtime` timeline is excluded from the default plugin set
+because it emits one record for every registry key. Run it explicitly when
+needed:
+
+```bash
+reg2json collected-hives/ --plugin regtime -o regtime.json
+```
+
 You can also convert registry files directly into a Python `List[dict]` object:
 
 ```python
@@ -140,9 +156,9 @@ under `reg2es.custom` and `reg2es.value_data`.
     "action": "compname"
   },
   "registry": {
-    "hive": "SYSTEM",
-    "path": "ControlSet001\\Control\\ComputerName\\ComputerName",
-    "key": "ComputerName",
+    "hive": "HKLM",
+    "key": "SYSTEM\\ControlSet001\\Control\\ComputerName\\ComputerName",
+    "path": "HKLM\\SYSTEM\\ControlSet001\\Control\\ComputerName\\ComputerName",
     "value": "ComputerName",
     "data": {
       "type": "RegSZ",
@@ -155,6 +171,10 @@ under `reg2es.custom` and `reg2es.value_data`.
   "tags": ["registry", "host-01"],
   "reg2es": {
     "plugin": {"name": "compname"},
+    "source": {
+      "hive": "SYSTEM",
+      "key_path": "ROOT\\ControlSet001\\Control\\ComputerName\\ComputerName"
+    },
     "value_data": "DESKTOP-EXAMPLE"
   }
 }

@@ -151,7 +151,17 @@ class Plugin(BasePlugin):
                 status = LOGTYPES[logtype]
                 res = PluginResult(key=key, value=data)
                 res.custom['cat'] = cat
-                res.custom['subcat'] = subcats[i]
+                # Newer Windows versions add subcategories that are not present
+                # in the hard-coded table, so the footer count can exceed the
+                # known list.  Fall back to a positional name instead of raising
+                # IndexError and losing the whole SECURITY hive.
+                if i < len(subcats):
+                    res.custom['subcat'] = subcats[i]
+                else:
+                    res.custom['subcat'] = f"{cat} Subcategory {i}"
                 res.custom['status'] = status
                 yield res
-            currOffset = currOffset + 2*(i+1)
+            # Advance by the number of subcategories reported for this category.
+            # Using the count (instead of the loop variable) stays correct even
+            # when a category reports zero subcategories.
+            currOffset = currOffset + 2*subcatCount[cat]

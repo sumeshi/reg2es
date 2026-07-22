@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import orjson
 import pytest
 
 import reg2es as package
@@ -112,6 +113,45 @@ def test_json_and_es_presenters_consume_the_same_nonempty_chunks() -> None:
         runner.kwargs["additional_tags"] == ["case-1"]
         for runner in runners
     )
+
+
+def test_json_presenter_split_writes_one_file_per_plugin(tmp_path: Path) -> None:
+    first_input = tmp_path / "SYSTEM"
+    second_input = tmp_path / "SOFTWARE"
+
+    class FakeRunner:
+        def __init__(self, **_kwargs):
+            pass
+
+        def gen_records(self):
+            yield [
+                {"id": 1, "reg2es": {"plugin": {"name": "services"}}},
+                {"id": 2, "reg2es": {"plugin": {"name": "compname"}}},
+                {"id": 3, "reg2es": {"plugin": {"name": "services"}}},
+            ]
+
+        def close(self):
+            pass
+
+    output_directory = tmp_path / "json"
+    presenter = Reg2jsonPresenter(
+        [first_input, second_input],
+        output_path=str(output_directory),
+        is_quiet=True,
+        split=True,
+    )
+
+    with patch("reg2es.presenters.Reg2jsonPresenter.Reg2es", FakeRunner):
+        output_paths = presenter.export_json()
+
+    assert [path.name for path in output_paths] == ["services.json", "compname.json"]
+    assert orjson.loads(output_paths[0].read_bytes()) == [
+        {"id": 1, "reg2es": {"plugin": {"name": "services"}}},
+        {"id": 3, "reg2es": {"plugin": {"name": "services"}}},
+    ]
+    assert orjson.loads(output_paths[1].read_bytes()) == [
+        {"id": 2, "reg2es": {"plugin": {"name": "compname"}}}
+    ]
 
 
 def test_bulk_import_reports_failures_instead_of_succeeding() -> None:

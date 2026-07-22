@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import orjson
+from Registry import Registry
 from Registry.Registry import RegBin
 
 from reg2es.models.Reg2es import (
@@ -55,6 +56,12 @@ def test_plugin_discovery_and_selection() -> None:
 
     selected = resolve_plugin_names(["services", "run"], discovered)
     assert [name for name, _plugin in selected] == ["services", "run"]
+
+    defaults = resolve_plugin_names(None, discovered)
+    assert "regtime" not in [name for name, _plugin in defaults]
+    assert [name for name, _plugin in resolve_plugin_names(["regtime"], discovered)] == [
+        "regtime"
+    ]
 
     with pytest.raises(ValueError, match="Unknown plugin"):
         resolve_plugin_names(["missing"], discovered)
@@ -249,7 +256,8 @@ def test_dataset_excludes_logs_and_removes_recovered_temp(tmp_path, monkeypatch)
     hive = tmp_path / "SYSTEM"
     transaction_log = tmp_path / "SYSTEM.LOG1"
     recovered = tmp_path / "recovered.hive"
-    for path in (hive, transaction_log, recovered):
+    hive.write_bytes(b"regf")
+    for path in (transaction_log, recovered):
         path.write_bytes(b"data")
     registry = MagicMock()
 
@@ -368,6 +376,9 @@ def test_plugin_result_conversion_is_ecs_shaped_and_lossless() -> None:
     )
 
     assert document["event"]["action"] == "example"
+    assert document["registry"]["hive"] == "HKLM"
+    assert document["registry"]["key"] == "SYSTEM\\Control\\Test"
+    assert document["registry"]["path"] == "HKLM\\SYSTEM\\Control\\Test"
     assert document["registry"]["value"] == "Payload"
     assert document["registry"]["data"] == {
         "type": result.value_type,
@@ -380,6 +391,39 @@ def test_plugin_result_conversion_is_ecs_shaped_and_lossless() -> None:
     assert "端末一号".encode() in payload
     assert orjson.loads(payload)["reg2es"]["custom"]["label"] == "端末一号"
     assert document["log"]["file"]["path"] == "/host/SYSTEM"
+    assert document["reg2es"]["source"] == {
+        "hive": "SYSTEM",
+        "key_path": "\\ROOT\\Control\\Test",
+    }
+
+
+def test_ecs_document_omits_unknown_timestamp() -> None:
+    result = PluginResult()
+    result.path = "ROOT\\Software\\Example"
+
+    document = plugin_result_to_document(
+        result,
+        "example",
+        "NTUSER.DAT",
+        "/host/NTUSER.DAT",
+    )
+
+    assert "@timestamp" not in document
+    assert document["registry"] == {
+        "hive": "HKCU",
+        "key": "Software\\Example",
+        "path": "HKCU\\Software\\Example",
+    }
+
+
+def test_missing_plugin_key_is_not_logged() -> None:
+    reg = MagicMock()
+    reg.open.side_effect = Registry.RegistryKeyNotFoundException("missing")
+    plugin_logger = MagicMock()
+    plugin = BasePlugin(reg, plugin_logger, "SYSTEM", "/host/SYSTEM")
+
+    assert plugin.open_key("Control\\Missing") is None
+    plugin_logger.assert_not_called()
 
 
 def test_runner_validates_configuration() -> None:

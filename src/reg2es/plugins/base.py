@@ -78,7 +78,8 @@ class BasePlugin(object):
             key = self.reg.open(path)
             return key
         except Registry.RegistryKeyNotFoundException:
-            self.logger.warning("Could not open key " + path)
+            # A missing key normally means that this plugin does not apply to
+            # this particular Windows installation, so it is not actionable.
             return None
 
     def get_currentcontrolset_path(self):
@@ -169,4 +170,3 @@ class PluginResult(object):
             self.value_name = value.name()
             self.value_type = value.value_type_str()
             self.value_data = value.value()
-

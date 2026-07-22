@@ -44,7 +44,10 @@ class BaseView(metaclass=ABCMeta):
             dest="plugins",
             default=None,
             choices=plugin_names,
-            help="Plugin name to run (repeatable). Omit to run all compatible plugins.",
+            help=(
+                "Plugin name to run (repeatable). Omit to run compatible, "
+                "default-enabled plugins."
+            ),
         )
         self.parser.add_argument(
             "--list-plugins",

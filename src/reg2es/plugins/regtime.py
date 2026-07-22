@@ -6,9 +6,10 @@ from reg2es.plugins import BasePlugin, PluginResult
 
 
 class Plugin(BasePlugin):
-    """Produces a timeline of every key's last modification date"""
+    """Opt-in: produces a timeline of every key's last modification date."""
 
     __REGHIVE__ = "ALL"
+    __DEFAULT_ENABLED__ = False
 
     def run(self):
         key = self.reg.root()
@@ -16,11 +17,25 @@ class Plugin(BasePlugin):
         yield from self.dump(key)
 
     def dump(self, key):
-        res = PluginResult(key=key)
-        res.path = self.cleanup_path(res.path)
-        yield res
+        try:
+            res = PluginResult(key=key)
+            res.path = self.cleanup_path(res.path)
+        except (UnicodeDecodeError, ValueError) as exc:
+            # Some hives (notably UsrClass.DAT) contain key names that are not
+            # valid UTF-16-LE.  python-registry raises while decoding the name,
+            # so skip that single key instead of aborting the whole hive.
+            self.warning(f"Skipping key with undecodable name: {exc}")
+            return
+        else:
+            yield res
 
-        for subkey in key.subkeys():
+        try:
+            subkeys = key.subkeys()
+        except (UnicodeDecodeError, ValueError) as exc:
+            self.warning(f"Skipping unreadable subkeys: {exc}")
+            return
+
+        for subkey in subkeys:
             yield from self.dump(subkey)
 
     def cleanup_path(self, s):
