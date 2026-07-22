@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -13,9 +14,14 @@ from Registry.Registry import RegBin
 
 from reg2es.models.Reg2es import (
     Reg2es,
+    RegistryRecoveryError,
+    _build_hive_dataset,
+    _close_parsers,
     _normalize_value,
+    _prepare_registry_hive,
     detect_hive_type,
     discover_plugins,
+    is_transaction_log,
     plugin_matches_hive,
     plugin_result_to_document,
     resolve_plugin_names,
@@ -31,6 +37,15 @@ def _runner(plugin_name, plugin, *, chunk_size=100, error_policy="raise"):
     runner.error_policy = error_policy
     runner.plugins = [(plugin_name, plugin)]
     return runner
+
+
+def _fake_registry(**attrs):
+    values = {
+        "_reg2es_recovery": None,
+        "_reg2es_temporary_path": None,
+        **attrs,
+    }
+    return SimpleNamespace(**values)
 
 
 def test_plugin_discovery_and_selection() -> None:
@@ -51,8 +66,253 @@ def test_hive_detection_prefers_parser_and_uses_safe_fallback() -> None:
     assert detect_hive_type(registry, Path("renamed.bin")) == "SOFTWARE"
 
     registry.hive_type.side_effect = ValueError("unknown")
-    assert detect_hive_type(registry, Path("SYSTEM.LOG1")) == "SYSTEM"
+    assert detect_hive_type(registry, Path("SYSTEM.LOG1")) == "UNKNOWN"
     assert detect_hive_type(registry, Path("sample.bin")) == "UNKNOWN"
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["SYSTEM.LOG", "SYSTEM.LOG1", "SYSTEM.log2", "user.dat.LoG1"],
+)
+def test_transaction_logs_are_recognized_case_insensitively(name) -> None:
+    assert is_transaction_log(Path(name))
+
+
+def test_clean_hive_ignores_stale_logs(tmp_path, monkeypatch) -> None:
+    hive = tmp_path / "SYSTEM"
+    hive.write_bytes(b"clean evidence")
+    (tmp_path / "SYSTEM.LOG1").write_bytes(b"invalid stale log")
+    monkeypatch.setattr(
+        "reg2es.models.Reg2es._primary_recovery_required", lambda _path: False
+    )
+
+    parser_path, recovery = _prepare_registry_hive(hive)
+
+    assert parser_path == hive
+    assert recovery is None
+    assert hive.read_bytes() == b"clean evidence"
+
+
+def test_dirty_hive_without_logs_fails_explicitly(tmp_path, monkeypatch) -> None:
+    hive = tmp_path / "SYSTEM"
+    hive.write_bytes(b"dirty evidence")
+    monkeypatch.setattr(
+        "reg2es.models.Reg2es._primary_recovery_required", lambda _path: True
+    )
+
+    with pytest.raises(RegistryRecoveryError, match="dirty.*no .LOG1/.LOG2"):
+        _prepare_registry_hive(hive)
+
+
+def test_single_log_recovery_uses_temp_copy_and_preserves_source(
+    tmp_path, monkeypatch
+) -> None:
+    hive = tmp_path / "SYSTEM"
+    original = b"dirty evidence"
+    hive.write_bytes(original)
+    log1 = tmp_path / "SYSTEM.LOG1"
+    log1.write_bytes(b"log one")
+
+    monkeypatch.setattr(
+        "reg2es.models.Reg2es._primary_recovery_required",
+        lambda path: path == hive,
+    )
+
+    class FakeLog:
+        def __init__(self, primary, log_path):
+            self.primary = primary
+            self.path = Path(log_path)
+
+        def is_eligible_log(self):
+            return True
+
+        def recover_hive(self):
+            self.primary.seek(0)
+            self.primary.write(b"recovered")
+            return 7
+
+    monkeypatch.setattr("reg2es.models.Reg2es.RegistryLog.RegistryLog", FakeLog)
+
+    recovered_path, recovery = _prepare_registry_hive(hive)
+    try:
+        assert recovery == {
+            "applied": True,
+            "method": "python-registry.RegistryLog",
+            "logs": [str(log1.resolve())],
+        }
+        assert recovered_path != hive
+        assert recovered_path.read_bytes().startswith(b"recovered")
+        assert hive.read_bytes() == original
+    finally:
+        recovered_path.unlink(missing_ok=True)
+
+
+def test_dual_log_recovery_uses_sequence_order_and_preserves_source(
+    tmp_path, monkeypatch
+) -> None:
+    hive = tmp_path / "SYSTEM"
+    original = b"dirty evidence"
+    hive.write_bytes(original)
+    log1 = tmp_path / "SYSTEM.LOG1"
+    log2 = tmp_path / "SYSTEM.LOG2"
+    log1.write_bytes(b"log one")
+    log2.write_bytes(b"log two")
+    calls = []
+
+    monkeypatch.setattr(
+        "reg2es.models.Reg2es._primary_recovery_required",
+        lambda path: path == hive,
+    )
+
+    class FakeLog:
+        def __init__(self, primary, log_path):
+            self.primary = primary
+            self.path = Path(log_path)
+            self.sequence = 20 if self.path == log1 else 10
+
+        def is_eligible_log(self):
+            return True
+
+        def is_starting_log(self, other):
+            return self.sequence < other.sequence
+
+        def recover_hive(self):
+            calls.append(("start", self.path.name))
+            self.primary.seek(0)
+            self.primary.write(b"recovered")
+            return self.sequence
+
+        def reload_primary_regf(self):
+            calls.append(("reload", self.path.name))
+
+        def recover_hive_continue(self, expected_sequence):
+            calls.append(("continue", self.path.name, expected_sequence))
+            return self.sequence
+
+    monkeypatch.setattr("reg2es.models.Reg2es.RegistryLog.RegistryLog", FakeLog)
+
+    recovered_path, recovery = _prepare_registry_hive(hive)
+    try:
+        assert calls == [
+            ("start", "SYSTEM.LOG2"),
+            ("reload", "SYSTEM.LOG1"),
+            ("continue", "SYSTEM.LOG1", 11),
+        ]
+        assert recovery == {
+            "applied": True,
+            "method": "python-registry.RegistryLog",
+            "logs": [str(log2.resolve()), str(log1.resolve())],
+        }
+        assert recovered_path != hive
+        assert recovered_path.read_bytes().startswith(b"recovered")
+        assert hive.read_bytes() == original
+    finally:
+        recovered_path.unlink(missing_ok=True)
+
+
+def test_unsupported_old_log_advises_external_recovery_and_cleans_temp(
+    tmp_path, monkeypatch
+) -> None:
+    from Registry import RegistryParse
+
+    hive = tmp_path / "SYSTEM"
+    hive.write_bytes(b"dirty evidence")
+    (tmp_path / "SYSTEM.LOG1").write_bytes(b"old log")
+    monkeypatch.setattr(
+        "reg2es.models.Reg2es._primary_recovery_required", lambda _path: True
+    )
+
+    real_named_temporary_file = __import__("tempfile").NamedTemporaryFile
+
+    def temporary_in_test_dir(**kwargs):
+        return real_named_temporary_file(dir=tmp_path, **kwargs)
+
+    monkeypatch.setattr(
+        "reg2es.models.Reg2es.tempfile.NamedTemporaryFile", temporary_in_test_dir
+    )
+
+    def reject_old_log(_primary, _log_path):
+        raise RegistryParse.NotSupportedException("Old transaction log")
+
+    monkeypatch.setattr(
+        "reg2es.models.Reg2es.RegistryLog.RegistryLog", reject_old_log
+    )
+
+    with pytest.raises(RegistryRecoveryError, match=r"rla\.exe"):
+        _prepare_registry_hive(hive)
+
+    assert list(tmp_path.glob("reg2es-recovered-*.hive")) == []
+    assert hive.read_bytes() == b"dirty evidence"
+
+
+def test_dataset_excludes_logs_and_removes_recovered_temp(tmp_path, monkeypatch) -> None:
+    hive = tmp_path / "SYSTEM"
+    transaction_log = tmp_path / "SYSTEM.LOG1"
+    recovered = tmp_path / "recovered.hive"
+    for path in (hive, transaction_log, recovered):
+        path.write_bytes(b"data")
+    registry = MagicMock()
+
+    prepare = MagicMock(
+        return_value=(recovered, {"applied": True, "logs": [str(transaction_log)]})
+    )
+    monkeypatch.setattr("reg2es.models.Reg2es._prepare_registry_hive", prepare)
+    monkeypatch.setattr(
+        "reg2es.models.Reg2es.Registry.Registry", lambda _path: registry
+    )
+    monkeypatch.setattr(
+        "reg2es.models.Reg2es.detect_hive_type", lambda _reg, _path: "SYSTEM"
+    )
+
+    dataset = _build_hive_dataset([transaction_log, hive])
+    assert prepare.call_args_list == [((hive,),)]
+    assert dataset["SYSTEM"][0][0] == hive
+
+    _close_parsers(dataset)
+    assert not recovered.exists()
+    assert hive.exists()
+    assert transaction_log.exists()
+
+
+def test_dataset_rejects_transaction_logs_without_primary(tmp_path) -> None:
+    transaction_log = tmp_path / "SYSTEM.LOG1"
+    transaction_log.write_bytes(b"log")
+
+    with pytest.raises(RegistryRecoveryError, match="No primary registry hive"):
+        _build_hive_dataset([transaction_log])
+
+
+def test_recovery_metadata_is_added_to_documents() -> None:
+    class ResultsPlugin(BasePlugin):
+        __REGHIVE__ = "SYSTEM"
+
+        def run(self):
+            result = PluginResult()
+            result.custom = {"ok": True}
+            yield result
+
+    recovery = {
+        "applied": True,
+        "method": "python-registry.RegistryLog",
+        "logs": ["/host/SYSTEM.LOG1"],
+    }
+    runner = _runner("results", ResultsPlugin)
+    dataset = {
+        "SYSTEM": [
+            (
+                Path("/host/SYSTEM"),
+                _fake_registry(_reg2es_recovery=recovery),
+            )
+        ]
+    }
+    with patch(
+        "reg2es.models.Reg2es._build_hive_dataset",
+        return_value=dataset,
+    ):
+        chunks = list(runner.gen_records())
+
+    assert chunks[0][0]["log"]["file"]["path"] == "/host/SYSTEM"
+    assert chunks[0][0]["reg2es"]["recovery"] == recovery
 
 
 @pytest.mark.parametrize(
@@ -138,7 +398,7 @@ def test_error_policy_continue_logs_and_raise_propagates(caplog) -> None:
             yield  # pragma: no cover - makes this a generator
 
     def dataset():
-        return {"SYSTEM": [(Path("/host/SYSTEM"), MagicMock())]}
+        return {"SYSTEM": [(Path("/host/SYSTEM"), _fake_registry())]}
 
     continuing = _runner("failing", FailingPlugin, error_policy="continue")
     with (
@@ -173,7 +433,7 @@ def test_records_are_chunked_once_with_final_remainder() -> None:
                 yield result
 
     runner = _runner("results", ResultsPlugin, chunk_size=2)
-    dataset = {"SYSTEM": [(Path("/host/SYSTEM"), MagicMock())]}
+    dataset = {"SYSTEM": [(Path("/host/SYSTEM"), _fake_registry())]}
     with patch(
         "reg2es.models.Reg2es._build_hive_dataset",
         return_value=dataset,
@@ -208,8 +468,8 @@ def test_declared_hive_order_and_state_are_isolated_between_datasets(
     monkeypatch.setattr(LocalGroups, "user_profile_list", ["stale"])
 
     def dataset(marker):
-        software = MagicMock(marker=marker)
-        sam = MagicMock(marker=marker)
+        software = _fake_registry(marker=marker)
+        sam = _fake_registry(marker=marker)
         return {
             "SAM": [(Path(f"/{marker}/SAM"), sam)],
             "SOFTWARE": [(Path(f"/{marker}/SOFTWARE"), software)],
@@ -241,7 +501,7 @@ def test_closing_partial_generator_releases_dataset() -> None:
             yield PluginResult()
             yield PluginResult()
 
-    dataset = {"SYSTEM": [(Path("/host/SYSTEM"), MagicMock())]}
+    dataset = {"SYSTEM": [(Path("/host/SYSTEM"), _fake_registry())]}
     runner = _runner("results", ResultsPlugin, chunk_size=1)
     with patch(
         "reg2es.models.Reg2es._build_hive_dataset",

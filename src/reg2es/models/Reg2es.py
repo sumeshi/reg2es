@@ -17,6 +17,8 @@ import importlib
 import logging
 import pkgutil
 import re
+import shutil
+import tempfile
 from copy import deepcopy
 from datetime import datetime, timezone
 from enum import Enum
@@ -33,7 +35,7 @@ from typing import (
     Union,
 )
 
-from Registry import Registry
+from Registry import Registry, RegistryLog, RegistryParse
 
 from reg2es.plugins import BasePlugin, PluginResult
 
@@ -74,6 +76,138 @@ _FILENAME_HIVE_PATTERNS: Dict[str, str] = {
     "BCD": "BCD",
 }
 
+_TRANSACTION_LOG_SUFFIXES = (".LOG", ".LOG1", ".LOG2")
+
+
+class RegistryRecoveryError(RuntimeError):
+    """Raised when a dirty registry hive cannot be safely recovered."""
+
+
+def is_transaction_log(path: Path) -> bool:
+    """Return whether *path* is a registry transaction log, ignoring case."""
+    return path.name.upper().endswith(_TRANSACTION_LOG_SUFFIXES)
+
+
+def _find_transaction_logs(primary_path: Path) -> List[Path]:
+    """Find transaction logs next to a primary hive without case assumptions."""
+    expected = {
+        f"{primary_path.name}.LOG1".casefold(),
+        f"{primary_path.name}.LOG2".casefold(),
+    }
+    try:
+        siblings = primary_path.parent.iterdir()
+    except OSError as exc:
+        raise RegistryRecoveryError(
+            f"Cannot inspect transaction logs for '{primary_path}': {exc}"
+        ) from exc
+    return sorted(
+        (
+            item
+            for item in siblings
+            if item.is_file() and item.name.casefold() in expected
+        ),
+        key=lambda item: item.name.casefold(),
+    )
+
+
+def _primary_recovery_required(primary_path: Path) -> bool:
+    """Read the REGF header and report whether header or data recovery is needed."""
+    try:
+        with primary_path.open("rb") as primary:
+            header = primary.read(512)
+        status = RegistryParse.REGFBlock(header, 0, False).recovery_required()
+    except Exception as exc:
+        raise RegistryRecoveryError(
+            f"Cannot inspect registry hive '{primary_path}': {exc}"
+        ) from exc
+    return bool(status.recover_header or status.recover_data)
+
+
+def _prepare_registry_hive(primary_path: Path) -> Tuple[Path, Optional[dict]]:
+    """Recover a dirty hive into a temporary copy and return its provenance."""
+    if is_transaction_log(primary_path):
+        raise RegistryRecoveryError(
+            f"Transaction log '{primary_path}' cannot be used as a primary hive"
+        )
+
+    logs = _find_transaction_logs(primary_path)
+    if not _primary_recovery_required(primary_path):
+        return primary_path, None
+    if not logs:
+        raise RegistryRecoveryError(
+            f"Registry hive '{primary_path}' is dirty but no .LOG1/.LOG2 was found"
+        )
+
+    temporary = tempfile.NamedTemporaryFile(
+        prefix="reg2es-recovered-", suffix=".hive", delete=False
+    )
+    temporary_path = Path(temporary.name)
+    temporary.close()
+    try:
+        shutil.copyfile(primary_path, temporary_path)
+        with temporary_path.open("r+b") as recovered:
+            try:
+                parsed_logs = []
+                for path in logs:
+                    recovered.seek(0)
+                    parsed_logs.append(RegistryLog.RegistryLog(recovered, str(path)))
+            except RegistryParse.NotSupportedException as exc:
+                raise RegistryRecoveryError(
+                    f"Unsupported transaction log for '{primary_path}': {exc}. "
+                    "Recover the hive externally (for example with rla.exe) "
+                    "and provide the recovered hive to reg2es"
+                ) from exc
+            except Exception as exc:
+                raise RegistryRecoveryError(
+                    f"Cannot parse transaction log for '{primary_path}': {exc}"
+                ) from exc
+
+            eligible = [log for log in parsed_logs if log.is_eligible_log()]
+            if not eligible:
+                raise RegistryRecoveryError(
+                    f"Registry hive '{primary_path}' is dirty but has no eligible log"
+                )
+            if len(eligible) == 2 and not eligible[0].is_starting_log(eligible[1]):
+                eligible.reverse()
+
+            try:
+                last_sequence = eligible[0].recover_hive()
+                if last_sequence is None:
+                    raise RegistryRecoveryError(
+                        f"Transaction log did not recover dirty hive '{primary_path}'"
+                    )
+                applied_paths = [logs[parsed_logs.index(eligible[0])]]
+                for continuation in eligible[1:]:
+                    continuation.reload_primary_regf()
+                    last_sequence = continuation.recover_hive_continue(
+                        (last_sequence + 1) & 0xFFFFFFFF
+                    )
+                    if last_sequence is None:
+                        raise RegistryRecoveryError(
+                            f"Transaction log sequence is discontinuous for '{primary_path}'"
+                        )
+                    applied_paths.append(logs[parsed_logs.index(continuation)])
+            except RegistryRecoveryError:
+                raise
+            except Exception as exc:
+                raise RegistryRecoveryError(
+                    f"Failed to recover registry hive '{primary_path}': {exc}"
+                ) from exc
+
+        if _primary_recovery_required(temporary_path):
+            raise RegistryRecoveryError(
+                f"Recovered registry hive '{primary_path}' is still dirty"
+            )
+
+        return temporary_path, {
+            "applied": True,
+            "method": "python-registry.RegistryLog",
+            "logs": [str(path.resolve()) for path in applied_paths],
+        }
+    except Exception:
+        temporary_path.unlink(missing_ok=True)
+        raise
+
 
 def detect_hive_type(reg: Registry.Registry, file_path: Path) -> str:
     """Return canonical hive name using hive_type() first, filename fallback.
@@ -85,6 +219,9 @@ def detect_hive_type(reg: Registry.Registry, file_path: Path) -> str:
     Returns:
         Canonical hive name (e.g. "SOFTWARE", "NTUSER.DAT") or "UNKNOWN".
     """
+    if is_transaction_log(file_path):
+        return "UNKNOWN"
+
     try:
         ht = reg.hive_type()
         name = _HIVETYPE_TO_NAME.get(ht.value)
@@ -254,7 +391,7 @@ def _timestamp_to_iso(value: Any) -> Optional[str]:
         return None
     try:
         return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
-    except OSError, OverflowError, ValueError:
+    except (OSError, OverflowError, ValueError):
         return None
 
 
@@ -264,6 +401,7 @@ def plugin_result_to_document(
     hive_name: str,
     hive_path: str,
     additional_tags: Optional[Sequence[str]] = None,
+    recovery: Optional[dict] = None,
 ) -> dict:
     """Convert a single PluginResult to an ECS-compliant document.
 
@@ -321,6 +459,9 @@ def plugin_result_to_document(
     if result.custom:
         doc["reg2es"]["custom"] = _normalize_value(result.custom)
 
+    if recovery is not None:
+        doc["reg2es"]["recovery"] = _normalize_value(recovery)
+
     # Preserve raw plugin timestamps and provide valid ISO forms when possible.
     raw_timestamps = {
         "accessed": result.atime,
@@ -355,10 +496,29 @@ def _build_hive_dataset(
         Dict mapping canonical hive name -> list of (path, Registry) tuples.
     """
     dataset: Dict[str, List[Tuple[Path, Registry.Registry]]] = {}
-    for path in sorted(input_paths, key=lambda item: str(item)):
-        reg = Registry.Registry(str(path))
-        hive_name = detect_hive_type(reg, path)
-        dataset.setdefault(hive_name, []).append((path, reg))
+    primary_paths = [path for path in input_paths if not is_transaction_log(path)]
+    if not primary_paths:
+        raise RegistryRecoveryError("No primary registry hive was provided")
+    try:
+        for path in sorted(primary_paths, key=lambda item: str(item)):
+            parser_path, recovery = _prepare_registry_hive(path)
+            try:
+                reg = Registry.Registry(str(parser_path))
+                setattr(reg, "_reg2es_recovery", recovery)
+                setattr(
+                    reg,
+                    "_reg2es_temporary_path",
+                    parser_path if parser_path != path else None,
+                )
+                hive_name = detect_hive_type(reg, path)
+                dataset.setdefault(hive_name, []).append((path, reg))
+            except Exception:
+                if parser_path != path:
+                    parser_path.unlink(missing_ok=True)
+                raise
+    except Exception:
+        _close_parsers(dataset)
+        raise
     return dataset
 
 
@@ -369,7 +529,27 @@ def _close_parsers(
     # python-registry reads the complete file in its constructor and closes
     # the underlying file immediately.  Clearing references releases its
     # in-memory buffers promptly, including when a generator is closed early.
+    for entries in dataset.values():
+        for _path, reg in entries:
+            temporary_path = _get_registry_metadata(reg, "_reg2es_temporary_path")
+            if temporary_path is not None:
+                Path(temporary_path).unlink(missing_ok=True)
     dataset.clear()
+
+
+def _get_registry_metadata(reg: Registry.Registry, attribute: str) -> Any:
+    """Return metadata explicitly attached to a Registry object.
+
+    Tests often use ``MagicMock`` objects as stand-ins for python-registry
+    parsers.  ``getattr(mock, "missing", None)`` fabricates a child mock
+    instead of returning the default, which can then be recursively normalized
+    and grow memory without bound.  Reading the instance ``__dict__`` only
+    returns attributes that were actually set by ``_build_hive_dataset``.
+    """
+    try:
+        return vars(reg).get(attribute)
+    except TypeError:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -536,6 +716,7 @@ class Reg2es:
                                     hive_name,
                                     str(hive_path),
                                     getattr(self, "additional_tags", None),
+                                    _get_registry_metadata(reg, "_reg2es_recovery"),
                                 )
                                 yield doc
                         except Exception as exc:

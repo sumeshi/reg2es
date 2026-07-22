@@ -4,6 +4,7 @@ from typing import List, Optional
 
 from reg2es.views.BaseView import BaseView
 from reg2es.presenters.Reg2jsonPresenter import Reg2jsonPresenter
+from reg2es.models.Reg2es import is_transaction_log
 
 
 class Reg2jsonView(BaseView):
@@ -33,9 +34,21 @@ class Reg2jsonView(BaseView):
         for reg_file in reg_files:
             p = Path(reg_file)
             if p.is_dir():
-                paths.extend(f for f in p.rglob("*") if f.is_file())
+                paths.extend(
+                    f
+                    for f in p.rglob("*")
+                    if f.is_file() and not is_transaction_log(f)
+                )
             elif p.is_file():
-                paths.append(p)
+                if is_transaction_log(p):
+                    self.log(
+                        f"Warning: {reg_file} is a registry transaction log; "
+                        "it will be auto-applied with its primary hive and is "
+                        "not processed as a standalone hive.",
+                        self.args.quiet,
+                    )
+                else:
+                    paths.append(p)
             else:
                 self.log(
                     f"Warning: {reg_file} does not exist, skipping.",
