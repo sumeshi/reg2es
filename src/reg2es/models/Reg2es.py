@@ -518,7 +518,6 @@ def plugin_result_to_document(
         registry_data: dict = {"type": result.value_type}
         if isinstance(result.value_data, bytes):
             registry_data["bytes"] = len(result.value_data)
-            registry_data["strings"] = [normalized_data]
         elif isinstance(normalized_data, str):
             registry_data["strings"] = [normalized_data]
         elif isinstance(normalized_data, list) and all(
@@ -531,6 +530,11 @@ def plugin_result_to_document(
     # Custom fields (lossless).
     if result.custom:
         doc["reg2es"]["custom"] = _normalize_value(result.custom)
+
+    if plugin_name == "recentdocs":
+        document_name = result.custom.get("docname")
+        if isinstance(document_name, str) and document_name:
+            doc["file"] = {"name": document_name}
 
     if recovery is not None:
         doc["reg2es"]["recovery"] = _normalize_value(recovery)

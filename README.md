@@ -156,6 +156,10 @@ Each plugin result becomes one ECS-oriented document. Standard `event`,
 Lossless plugin-specific data and the original offline-hive location are kept
 under `reg2es`.
 
+Binary registry values report their size in `registry.data.bytes`; their raw
+hex is preserved once in `reg2es.value_data`. Parsed fields remain under
+`reg2es.custom`, and RecentDocs names are also exposed as ECS `file.name`.
+
 ```json
 {
   "@timestamp": "2015-10-30T07:24:57.814133+00:00",

@@ -4,7 +4,7 @@
 
 import pytest
 
-from reg2es.plugins.tasks import Plugin as plugin
+from reg2es.plugins.tasks import Plugin as plugin, RegistryAction
 
 from .reg_mock import (
     LoggerMock,
@@ -25,6 +25,26 @@ def reg_hex_to_binary(reg_hex_str):
 
     bytes = reg_hex_str.split(",")
     return bytearray([int(b, 16) for b in bytes])
+
+
+def _utf16_field(value):
+    encoded = value.encode("utf-16-le")
+    return len(encoded).to_bytes(4, "little") + encoded
+
+
+def test_registry_action_v3_parses_action_id_and_string_fields():
+    binary = b"\x03\x00" + _utf16_field("Creator") + b"ff"
+    binary += _utf16_field("49b247cd-24d4-4ada-ad69-2d975a02b748")
+    binary += _utf16_field(r"%windir%\system32\RAServer.exe")
+    binary += _utf16_field("/offerraupdate")
+    binary += _utf16_field("%windir%")
+
+    action = RegistryAction.from_binary(binary)
+
+    assert action.runas == "Creator"
+    assert action.cmd == r"%windir%\system32\RAServer.exe /offerraupdate"
+    assert action.action_id == "49b247cd-24d4-4ada-ad69-2d975a02b748"
+    assert action.working_directory == "%windir%"
 
 
 @pytest.fixture

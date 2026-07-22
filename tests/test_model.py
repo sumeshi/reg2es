@@ -383,7 +383,6 @@ def test_plugin_result_conversion_is_ecs_shaped_and_lossless() -> None:
     assert document["registry"]["data"] == {
         "type": result.value_type,
         "bytes": 2,
-        "strings": ["dead"],
     }
     assert document["reg2es"]["value_data"] == "dead"
     assert document["reg2es"]["custom"]["nested"]["raw"] == "0001"
@@ -395,6 +394,21 @@ def test_plugin_result_conversion_is_ecs_shaped_and_lossless() -> None:
         "hive": "SYSTEM",
         "key_path": "\\ROOT\\Control\\Test",
     }
+
+
+def test_recentdocs_promotes_decoded_name_to_ecs_file_field() -> None:
+    result = PluginResult()
+    result.path = "ROOT\\Software\\Microsoft\\Windows\\RecentDocs"
+    result.custom = {"docname": "report.pdf"}
+
+    document = plugin_result_to_document(
+        result,
+        "recentdocs",
+        "NTUSER.DAT",
+        "/host/NTUSER.DAT",
+    )
+
+    assert document["file"] == {"name": "report.pdf"}
 
 
 def test_ecs_document_omits_unknown_timestamp() -> None:

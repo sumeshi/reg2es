@@ -77,12 +77,28 @@ class Plugin(BasePlugin):
             yield r
 
 class RegistryAction(object):
-    def __init__(self, runas, cmd):
+    def __init__(self, runas, cmd, action_id=None, working_directory=None):
         self.runas = runas
         self.cmd = cmd
+        if action_id:
+            self.action_id = action_id
+        if working_directory:
+            self.working_directory = working_directory
 
     def __str__(self):
         return f"RegistryAction<runas={self.runas}, cmd={self.cmd}>"
+
+    @staticmethod
+    def _read_utf16_field(binary, offset):
+        """Read a byte-length-prefixed UTF-16LE field."""
+        if offset + 4 > len(binary):
+            raise ValueError("truncated task action field length")
+        field_len = int.from_bytes(binary[offset : offset + 4], byteorder="little")
+        offset += 4
+        field_end = offset + field_len
+        if field_len % 2 or field_end > len(binary):
+            raise ValueError("invalid task action UTF-16 field length")
+        return binary[offset:field_end].decode("utf-16-le"), field_end
 
     @staticmethod
     def from_binary(binary):
@@ -120,23 +136,16 @@ class RegistryAction(object):
             offset += 2
 
             if action_type == "ff":
-                offset += 4
-                cmd_len = int.from_bytes(
-                    binary[offset : offset + 4], byteorder="little"
+                action_id, offset = RegistryAction._read_utf16_field(binary, offset)
+                cmd, offset = RegistryAction._read_utf16_field(binary, offset)
+                args, offset = RegistryAction._read_utf16_field(binary, offset)
+                working_directory, offset = RegistryAction._read_utf16_field(
+                    binary, offset
                 )
-                offset += 4
-                cmd = binary[offset : offset + cmd_len].decode("utf-16-le")
-
-                offset += cmd_len
-                args_len = int.from_bytes(
-                    binary[offset : offset + 4], byteorder="little"
-                )
-                if args_len > 0:
-                    offset += 4
-                    args = binary[offset : offset + args_len].decode("utf-16-le")
+                if args:
                     cmd += " " + args
+                return RegistryAction(name, cmd, action_id, working_directory)
 
             return RegistryAction(name, cmd)
 
         return RegistryAction("REGRIPPY_UNSUPPORTED", "REGRIPPY_UNSUPPORTED")
-
