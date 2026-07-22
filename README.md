@@ -58,11 +58,15 @@ regfiles/
 reg2es /regfiles/ # Recursively collects files as one dataset.
 ```
 
+Directory scans process REGF hive files only. Registry transaction logs and
+unrelated files are not treated as standalone hives.
+
 
 ### Common options
 
-- `--plugin NAME`: run one plugin; repeat to select several. By default, all
-  plugins compatible with the supplied hives run.
+- `--plugin NAME`: run one plugin; repeat to select several. By default,
+  compatible, default-enabled plugins run. The exhaustive `regtime` plugin is
+  opt-in.
 - `--list-plugins`: print the 38 bundled plugins and exit.
 - `--size N`: set the generated/indexed chunk size (default: 500).
 - `--tags tag1,tag2`: add tags to every document.
@@ -119,6 +123,11 @@ default):
 reg2json collected-hives/ --split -o artifacts/
 ```
 
+For example, the command above produces files such as
+`artifacts/antivirus.json`, `artifacts/services.json`, and
+`artifacts/userassist.json`. Plugins with no results do not produce an empty
+file.
+
 The exhaustive `regtime` timeline is excluded from the default plugin set
 because it emits one record for every registry key. Run it explicitly when
 needed:
@@ -142,9 +151,10 @@ result: list[dict] = reg2json(
 
 ## Output Format Example
 
-Each plugin result becomes one document. Common ECS fields describe the event,
-registry artifact, source hive, and tags. Lossless plugin-specific data is kept
-under `reg2es.custom` and `reg2es.value_data`.
+Each plugin result becomes one ECS-oriented document. Standard `event`,
+`registry`, `log.file`, `tags`, and `@timestamp` fields describe the artifact.
+Lossless plugin-specific data and the original offline-hive location are kept
+under `reg2es`.
 
 ```json
 {
