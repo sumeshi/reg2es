@@ -42,7 +42,7 @@ This project uses:
 - Use GitHub Issues to report bugs or request features
 
 ### Pull Requests
-1. Create a feature branch from `master`
+1. Create a feature branch from `main`
 2. Make your changes
 3. Add tests if applicable
 4. Ensure all tests pass
