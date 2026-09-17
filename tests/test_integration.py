@@ -63,7 +63,7 @@ def test_elasticsearch_bulk_action_and_tls_configuration() -> None:
             1,
             [],
         )
-    action = bulk.call_args.args[1][0]
+    action = list(bulk.call_args.args[1])[0]
     assert action["_index"] == "registry"
     assert action["_source"] == {"id": 1}
     assert action["pipeline"] == "pipeline"

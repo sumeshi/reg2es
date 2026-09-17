@@ -15,7 +15,7 @@ def _normalize_paths(input_paths: PathInput) -> List[Path]:
     else:
         values = list(input_paths)
     if not values:
-        raise ValueError("at least one registry path is required")
+        raise ValueError("At least one registry hive path is required.")
     return [Path(value).resolve() for value in values]
 
 

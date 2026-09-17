@@ -1,6 +1,6 @@
 # coding: utf-8
 from hashlib import sha1
-from typing import List, Tuple
+from typing import Iterable, Tuple
 
 import orjson
 from elasticsearch import Elasticsearch
@@ -9,13 +9,8 @@ from elasticsearch.helpers import bulk
 
 class ElasticsearchUtils:
     def __init__(
-        self,
-        hostname: str,
-        port: int,
-        scheme: str,
-        login: str,
-        pwd: str,
-        verify_certs: bool = True,
+        self, hostname: str, port: int, scheme: str, login: str, pwd: str,
+        verify_certs: bool = True, ca_certs: str | None = None,
     ) -> None:
         kwargs = {
             "hosts": [f"{scheme}://{hostname}:{port}"],
@@ -23,14 +18,19 @@ class ElasticsearchUtils:
         }
         if login:
             kwargs["basic_auth"] = (login, pwd)
+        if ca_certs is not None:
+            kwargs["ca_certs"] = ca_certs
         self.es = Elasticsearch(**kwargs)
+
+    def close(self) -> None:
+        self.es.close()
 
     def calc_hash(self, record: dict) -> str:
         return sha1(orjson.dumps(record, option=orjson.OPT_SORT_KEYS)).hexdigest()
 
     def bulk_indice(
         self,
-        records: List[dict],
+        records: Iterable[dict],
         index_name: str,
         pipeline: str = "",
     ) -> Tuple[int, list]:
@@ -44,20 +44,21 @@ class ElasticsearchUtils:
         Returns:
             Tuple of (success_count, failed_list).
         """
-        events = []
-        for record in records:
-            event = {
-                "_id": self.calc_hash(record),
-                "_index": index_name,
-                "_source": record,
-            }
-            if pipeline:
-                event["pipeline"] = pipeline
-            events.append(event)
+
+        def actions():
+            for record in records:
+                event = {
+                    "_id": self.calc_hash(record),
+                    "_index": index_name,
+                    "_source": record,
+                }
+                if pipeline:
+                    event["pipeline"] = pipeline
+                yield event
 
         try:
             success, failed = bulk(
-                self.es, events, raise_on_error=False, stats_only=False
+                self.es, actions(), raise_on_error=False, stats_only=False
             )
             return (success, failed)
         except Exception as e:

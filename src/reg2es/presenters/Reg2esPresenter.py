@@ -24,13 +24,14 @@ class Reg2esPresenter:
         plugin_names: Optional[List[str]] = None,
         additional_tags: Optional[List[str]] = None,
         verify_certs: bool = True,
+        ca_certs: str | None = None,
         logger: Optional[Callable[[str, bool], None]] = None,
     ):
         self.input_paths = (
             [input_paths] if isinstance(input_paths, Path) else list(input_paths)
         )
         if not self.input_paths:
-            raise ValueError("at least one registry path is required")
+            raise ValueError("At least one registry hive path is required.")
         self.host = host
         self.port = port
         self.index = index
@@ -43,6 +44,7 @@ class Reg2esPresenter:
         self.plugin_names = plugin_names
         self.additional_tags = additional_tags
         self.verify_certs = verify_certs
+        self.ca_certs = ca_certs
         self.logger = logger
 
     def reg2es(self) -> Generator[List[dict], None, None]:
@@ -64,50 +66,34 @@ class Reg2esPresenter:
 
     def bulk_import(self) -> tuple[int, list]:
         es = ElasticsearchUtils(
-            hostname=self.host,
-            port=self.port,
-            scheme=self.scheme,
-            login=self.login,
-            pwd=self.pwd,
-            verify_certs=self.verify_certs,
+            hostname=self.host, port=self.port, scheme=self.scheme,
+            login=self.login, pwd=self.pwd, verify_certs=self.verify_certs,
+            ca_certs=self.ca_certs,
         )
-
+        chunks = None
         total_success = 0
-        total_failed: list = []
         batch_count = 0
-
-        for records in self.reg2es():
-            try:
+        try:
+            chunks = self.reg2es()
+            for records in chunks:
                 success, failed = es.bulk_indice(records, self.index, self.pipeline)
                 total_success += success
-                if failed:
-                    total_failed.extend(failed)
                 batch_count += 1
-            except Exception:
-                if self.logger:
-                    self.logger("Error occurred during bulk indexing", self.is_quiet)
-                raise
-
+                if failed:
+                    raise RuntimeError(
+                        f"Elasticsearch failed to index {len(failed)} document(s)"
+                    )
+        finally:
+            try:
+                close = getattr(chunks, "close", None)
+                if close is not None:
+                    close()
+            finally:
+                es.close()
         if self.logger:
             self.logger(
                 f"Bulk import completed: {batch_count} batches processed",
                 self.is_quiet,
             )
-            self.logger(
-                f"Successfully indexed: {total_success} documents",
-                self.is_quiet,
-            )
-            if total_failed:
-                self.logger(
-                    f"Failed to index: {len(total_failed)} documents",
-                    self.is_quiet,
-                )
-                for failure in total_failed[:3]:
-                    self.logger(f"Error: {failure}", self.is_quiet)
-
-        if total_failed:
-            raise RuntimeError(
-                f"Elasticsearch failed to index {len(total_failed)} document(s)"
-            )
-
-        return total_success, total_failed
+            self.logger(f"Successfully indexed: {total_success} documents", self.is_quiet)
+        return total_success, []

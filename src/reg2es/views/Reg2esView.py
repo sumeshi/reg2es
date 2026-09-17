@@ -15,34 +15,45 @@ class Reg2esView(BaseView):
 
     def define_options(self):
         self.parser.add_argument(
+            "--ca-certs",
+            default=None,
+            help="Path to a CA certificate bundle for TLS verification.",
+        )
+        self.parser.add_argument(
             "reg_files",
             nargs="*",
             type=str,
-            help="Windows NT Registry files or directories containing them.",
+            help="Input Windows NT Registry hives or directories containing them.",
         )
         self.parser.add_argument(
-            "--host", default="localhost", help="Elasticsearch host"
+            "--host", default="localhost", help="Elasticsearch host."
         )
         self.parser.add_argument(
-            "--port", default=9200, type=int, help="Elasticsearch port number"
-        )
-        self.parser.add_argument("--index", default="reg2es", help="Index name")
-        self.parser.add_argument(
-            "--scheme", default="http", help="Scheme to use (http, https)"
+            "--port", default=9200, type=int, help="Elasticsearch port."
         )
         self.parser.add_argument(
-            "--pipeline", default="", help="Ingest pipeline to use"
+            "--index", default="reg2es", help="Elasticsearch index name."
         )
         self.parser.add_argument(
-            "--login", default="", help="Login for Elasticsearch authentication"
+            "--scheme", default="http", help="Connection scheme (http or https)."
         )
         self.parser.add_argument(
-            "--pwd", default="", help="Password for Elasticsearch authentication"
+            "--pipeline", default="", help="Elasticsearch ingest pipeline to use."
+        )
+        self.parser.add_argument(
+            "--login",
+            default="",
+            help="Username for Elasticsearch authentication.",
+        )
+        self.parser.add_argument(
+            "--pwd",
+            default="",
+            help="Password for Elasticsearch authentication.",
         )
         self.parser.add_argument(
             "--no-verify-certs",
             action="store_true",
-            help="Disable TLS certificate verification for Elasticsearch.",
+            help="Disable TLS certificate verification.",
         )
 
     def __collect_input_files(self, reg_files: List[str]) -> List[Path]:
@@ -64,20 +75,20 @@ class Reg2esView(BaseView):
                 if is_transaction_log(p):
                     self.log(
                         f"Warning: {reg_file} is a registry transaction log; "
-                        "it will be auto-applied with its primary hive and is "
-                        "not processed as a standalone hive.",
+                        "it will be applied automatically with its primary hive "
+                        "and will not be processed separately.",
                         self.args.quiet,
                     )
                 elif not looks_like_registry_hive(p):
                     self.log(
-                        f"Warning: {reg_file} is not a registry hive, skipping.",
+                        f"Warning: {reg_file} is not a registry hive; skipping.",
                         self.args.quiet,
                     )
                 else:
                     paths.append(p)
             else:
                 self.log(
-                    f"Warning: {reg_file} does not exist, skipping.",
+                    f"Warning: {reg_file} does not exist; skipping.",
                     self.args.quiet,
                 )
         return paths
@@ -86,15 +97,16 @@ class Reg2esView(BaseView):
         if self.list_plugins():
             return
         if not self.args.reg_files:
-            self.parser.error("at least one registry file or directory is required")
+            self.parser.error("At least one registry hive or directory is required.")
 
         input_files = self.__collect_input_files(self.args.reg_files)
 
         if not input_files:
-            self.parser.error("no readable input files found")
+            self.parser.error("No readable registry hives found.")
 
         self.log(
-            f"Processing {len(input_files)} file(s) as 1 dataset.", self.args.quiet
+            f"Processing {len(input_files)} hive(s) as a single dataset.",
+            self.args.quiet,
         )
 
         verify_certs = not getattr(self.args, "no_verify_certs", False)
@@ -103,6 +115,7 @@ class Reg2esView(BaseView):
         Reg2esPresenter(
             input_paths=input_files,
             host=self.args.host,
+            ca_certs=self.args.ca_certs,
             port=self.args.port,
             index=self.args.index,
             scheme=self.args.scheme,
@@ -117,7 +130,7 @@ class Reg2esView(BaseView):
             logger=self.log,
         ).bulk_import()
 
-        self.log("Import completed.", self.args.quiet)
+        self.log("Import completed successfully.", self.args.quiet)
 
 
 def entry_point():

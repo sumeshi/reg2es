@@ -8,10 +8,10 @@
 A command-line tool and Python library for extracting forensic artifacts from
 Windows NT Registry (REGF) hives and importing them into Elasticsearch.
 
-The 38 bundled plugins are ported from
+The 38 bundled plugins are based on
 [airbus-cert/regrippy](https://github.com/airbus-cert/regrippy). `reg2es` runs
 standalone and does not require the `regrippy` package at runtime. Both
-`reg2es` and `reg2json` consume the same plugin runner and emit the same
+`reg2es` and `reg2json` use the same plugin runner and emit the same
 ECS-oriented documents.
 
 
@@ -55,7 +55,7 @@ regfiles/
       ├── SYSTEM
       └── UsrClass.dat
 
-reg2es /regfiles/ # Recursively collects files as one dataset.
+reg2es /regfiles/ # Recursively collects hives as one dataset.
 ```
 
 Directory scans process REGF hive files only. Registry transaction logs and
@@ -68,14 +68,15 @@ unrelated files are not treated as standalone hives.
   compatible, default-enabled plugins run. The exhaustive `regtime` plugin is
   opt-in.
 - `--list-plugins`: print the 38 bundled plugins and exit.
-- `--size N`: set the generated/indexed chunk size (default: 500).
+- `--size N`: set the generation and indexing chunk size (default: 500).
 - `--tags tag1,tag2`: add tags to every document.
 - `--quiet`: suppress progress output.
 
-`reg2es` additionally accepts Elasticsearch connection options including
+`reg2es` also accepts Elasticsearch connection options including
 `--host`, `--port`, `--index`, `--scheme`, `--pipeline`, `--login`, `--pwd`,
-and `--no-verify-certs`. Run `reg2es --help` or `reg2json --help` for the full
-current interface.
+`--ca-certs`, and `--no-verify-certs`. TLS verification is enabled by default;
+use `--ca-certs /path/to/ca.pem` for a private CA bundle. Run `reg2es --help`
+or `reg2json --help` for the full current interface.
 
 
 ### Examples
@@ -98,7 +99,7 @@ reg2es(
 )
 ```
 
-With credentials for Elastic Security:
+With Elasticsearch authentication:
 
 ```bash
 reg2es SYSTEM --login elastic --pwd '******'
@@ -115,9 +116,18 @@ reg2es SYSTEM --login elastic --pwd '******'
 reg2json NTUSER.DAT --plugin userassist -o artifacts.json
 ```
 
-Use `--split` to write one JSON array per plugin that produced results. With
-this option, `-o` names an output directory (the current directory is used by
-default):
+`reg2json` also supports line-delimited output. `--format jsonl` (or `ndjson`)
+writes one record per line without holding the entire dataset in memory. When
+no output path is specified, the default extension is `.jsonl`:
+
+```bash
+reg2json NTUSER.DAT --plugin userassist --format jsonl -o artifacts.jsonl
+```
+
+Use `--split` to write one output file per plugin that produced results. With
+the default JSON format, each file contains a JSON array. With `--format jsonl`
+or `--format ndjson`, each file contains one JSON object per line. The `-o`
+option names the output directory (the current directory is used by default):
 
 ```bash
 reg2json collected-hives/ --split -o artifacts/
@@ -136,7 +146,7 @@ needed:
 reg2json collected-hives/ --plugin regtime -o regtime.json
 ```
 
-You can also convert registry files directly into a Python `List[dict]` object:
+You can also convert registry files directly into a Python `list[dict]`:
 
 ```python
 from reg2es import reg2json

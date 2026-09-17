@@ -7,6 +7,13 @@ from reg2es.__about__ import __version__
 from reg2es.models.Reg2es import discover_plugins
 
 
+def positive_int(value: str) -> int:
+    number = int(value)
+    if number <= 0:
+        raise argparse.ArgumentTypeError("must be greater than zero")
+    return number
+
+
 class BaseView(metaclass=ABCMeta):
     def __init__(self):
         self.parser = argparse.ArgumentParser(allow_abbrev=False)
@@ -26,9 +33,9 @@ class BaseView(metaclass=ABCMeta):
         self.parser.add_argument(
             "--size",
             "-s",
-            type=int,
+            type=positive_int,
             default=500,
-            help="Chunk size for batch processing. (default: 500)",
+            help="Chunk size for batch processing (default: 500).",
         )
         self.parser.add_argument(
             "--tags",
