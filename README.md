@@ -241,6 +241,10 @@ Please report issues and feature requests. :sushi: :sushi: :sushi:
 
 ## License
 
+Standalone release ZIPs include `LICENSES.txt` with the project, bundled plugin,
+runtime dependency and build Python license notices. Keep it with the executables
+when redistributing them. The collector excludes development-only dependencies.
+
 **reg2es** is released under the [MIT](LICENSE) License.
 
 ### Third-Party Notices

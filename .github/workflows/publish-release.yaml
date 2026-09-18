@@ -62,10 +62,10 @@ jobs:
       - name: rename asset
         run: |
           bundle="dist/reg2es-windows-x64-v${{ steps.release_version.outputs.version }}"
-          mkdir -p "$bundle/licenses"
+          mkdir -p "$bundle"
           mv dist/reg2es.exe "$bundle/"
           mv dist/reg2json.exe "$bundle/"
-          uv run python .github/collect_runtime_licenses.py "$bundle/licenses"
+          uv run python .github/collect_runtime_licenses.py "$bundle/LICENSES.txt"
           python -c "import shutil; shutil.make_archive(r'$bundle', 'zip', root_dir=r'$bundle')"
         shell: bash
 
@@ -122,10 +122,10 @@ jobs:
       - name: rename asset
         run: |
           bundle="dist/reg2es-linux-x64-v${{ needs.build-windows.outputs.version }}"
-          mkdir -p "$bundle/licenses"
+          mkdir -p "$bundle"
           mv dist/reg2es "$bundle/"
           mv dist/reg2json "$bundle/"
-          uv run python .github/collect_runtime_licenses.py "$bundle/licenses"
+          uv run python .github/collect_runtime_licenses.py "$bundle/LICENSES.txt"
           python -c "import shutil; shutil.make_archive(r'$bundle', 'zip', root_dir=r'$bundle')"
         shell: bash
 
