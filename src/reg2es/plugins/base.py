@@ -2,7 +2,37 @@
 # commit 32e3ab3243415b7bf46f812d933f4d29862e3046 (v2.0.3), licensed under Apache-2.0.
 # Modifications: imports adapted to reg2es.plugins; unused CLI display helpers removed.
 
+import struct
+from datetime import datetime, timedelta, timezone
+
 from Registry import Registry
+
+UNIX_EPOCH_FILETIME = 116444736000000000
+
+
+def filetime_to_datetime(value):
+    """Return ``(UTC datetime, raw FILETIME)`` or ``None`` for invalid data.
+
+    Values before the Unix epoch (for example the 1601/0 sentinels) are
+    rejected; this is intentional for artifact times and is not a general
+    purpose FILETIME decoder.
+    """
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        if len(value) != 8:
+            return None
+        value = struct.unpack("<Q", bytes(value))[0]
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if value < UNIX_EPOCH_FILETIME:
+        return None
+    seconds, remainder = divmod(value, 10_000_000)
+    try:
+        timestamp = datetime(1601, 1, 1, tzinfo=timezone.utc) + timedelta(
+            seconds=seconds, microseconds=remainder // 10
+        )
+    except (OverflowError, ValueError):
+        return None
+    return timestamp, value
 
 
 def mactime(
@@ -153,6 +183,8 @@ class PluginResult(object):
         self.custom = {}
 
         self.path = None
+        # Keep sub-second precision.  This is the registry key LastWrite and
+        # must remain separate from an artifact/event timestamp.
         self.mtime = 0
         self.atime = 0
         self.ctime = 0
@@ -160,13 +192,51 @@ class PluginResult(object):
         self.value_type = None
         self.value_name = None
         self.value_data = None
+        self.event_time = None
+        self.event_time_source = None
+        self.event_time_meaning = None
+        self.event_time_precision = None
+        self.event_time_raw = None
+        # Plugins with no artifact time inherit this explicit contract-level
+        # reason; plugins can replace it with a format-specific reason.
+        self.timestamp_fallback_reason = "intrinsic_time_unavailable"
 
         if key:
             self.path = key.path()
-            self.mtime = int(key.timestamp().timestamp())
+            key_timestamp = key.timestamp()
+            if isinstance(key_timestamp, datetime):
+                if key_timestamp.tzinfo is None:
+                    key_timestamp = key_timestamp.replace(tzinfo=timezone.utc)
+                else:
+                    key_timestamp = key_timestamp.astimezone(timezone.utc)
+                self.mtime = key_timestamp.timestamp()
+            elif callable(getattr(key_timestamp, "timestamp", None)):
+                self.mtime = key_timestamp.timestamp()
+            else:
+                self.mtime = key_timestamp
             self.key_name = key.name()
 
         if value:
             self.value_name = value.name()
             self.value_type = value.value_type_str()
             self.value_data = value.value()
+
+    def set_event_time(
+        self,
+        value,
+        *,
+        source,
+        meaning,
+        precision=None,
+        raw=None,
+    ):
+        """Attach a plugin-parsed artifact time without changing LastWrite."""
+        self.event_time = value
+        self.event_time_source = source
+        self.event_time_meaning = meaning
+        self.event_time_precision = precision
+        self.event_time_raw = value if raw is None else raw
+
+    def mark_timestamp_fallback(self, reason):
+        """Record why this result has no usable intrinsic artifact time."""
+        self.timestamp_fallback_reason = reason

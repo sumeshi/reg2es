@@ -2,7 +2,25 @@
 # commit 32e3ab3243415b7bf46f812d933f4d29862e3046 (v2.0.3), licensed under Apache-2.0.
 # Modifications: imports adapted to reg2es.plugins; unused CLI display helpers removed.
 
-from reg2es.plugins import BasePlugin, PluginResult
+import struct
+
+from Registry import Registry
+
+from reg2es.plugins import BasePlugin, PluginResult, filetime_to_datetime
+
+
+def _dynamic_filetime(raw, offset):
+    """Decode a DynamicInfo FILETIME at a documented offset."""
+    if (
+        not isinstance(raw, (bytes, bytearray))
+        or len(raw) not in (28, 36)
+        or len(raw) < offset + 8
+    ):
+        return None
+    value = struct.unpack_from("<Q", raw, offset)[0]
+    # Reuse the shared converter so sentinel and out-of-range values are
+    # rejected without raising and aborting the whole plugin run.
+    return filetime_to_datetime(value)
 
 
 class Plugin(BasePlugin):
@@ -61,20 +79,75 @@ class Plugin(BasePlugin):
             r.custom = {
                 "RunType": runtype,
                 "Path": f"{task_prefix}\\Tasks{task.value('Path').value()}",
-                "Actions": RegistryAction.from_binary(task.value("Actions").value())
-                if "Actions" in task_values
-                else RegistryAction(None, None),
-                "Source": task.value("Source").value()
-                if "Source" in task_values
-                else None,
-                "Author": task.value("Author").value()
-                if "Author" in task_values
-                else None,
-                "Description": task.value("Description").value()
-                if "Description" in task_values
-                else None,
+                "Actions": (
+                    RegistryAction.from_binary(task.value("Actions").value())
+                    if "Actions" in task_values
+                    else RegistryAction(None, None)
+                ),
+                "Source": (
+                    task.value("Source").value() if "Source" in task_values else None
+                ),
+                "Author": (
+                    task.value("Author").value() if "Author" in task_values else None
+                ),
+                "Description": (
+                    task.value("Description").value()
+                    if "Description" in task_values
+                    else None
+                ),
             }
+            dynamic = None
+            if "DynamicInfo" in task_values:
+                try:
+                    dynamic = task.value("DynamicInfo").value()
+                except Registry.RegistryValueNotFoundException:
+                    dynamic = None
+            # TaskCache DynamicInfo is documented as 28/36 bytes: creation at
+            # offset 4, last start at 12, and last stop at 28 for the 36-byte
+            # form.  Last start represents the latest execution when present;
+            # creation is the meaningful fallback for a never-run task.
+            start = _dynamic_filetime(dynamic, 12)
+            created = _dynamic_filetime(dynamic, 4)
+            stopped = (
+                _dynamic_filetime(dynamic, 28)
+                if isinstance(dynamic, (bytes, bytearray)) and len(dynamic) == 36
+                else None
+            )
+            r.custom["DynamicInfo"] = {
+                "raw": dynamic,
+                "length": (
+                    len(dynamic) if isinstance(dynamic, (bytes, bytearray)) else None
+                ),
+                "last_start": start[1] if start else None,
+                "created": created[1] if created else None,
+                "last_stop": stopped[1] if stopped else None,
+            }
+            if start:
+                r.set_event_time(
+                    start[0],
+                    source="TaskCache.DynamicInfo.last_start",
+                    meaning="scheduled_task_last_run",
+                    precision="microseconds",
+                    raw=start[1],
+                )
+            elif created:
+                r.set_event_time(
+                    created[0],
+                    source="TaskCache.DynamicInfo.created",
+                    meaning="scheduled_task_created",
+                    precision="microseconds",
+                    raw=created[1],
+                )
+            elif dynamic is None:
+                r.mark_timestamp_fallback("taskcache_dynamicinfo_missing")
+            else:
+                r.mark_timestamp_fallback("taskcache_dynamicinfo_invalid_filetime")
+                self.warning(
+                    f"plugin=tasks hive={self.hive_name} path={self.hive_path} "
+                    f"invalid DynamicInfo for {task.name()}"
+                )
             yield r
+
 
 class RegistryAction(object):
     def __init__(self, runas, cmd, action_id=None, working_directory=None):

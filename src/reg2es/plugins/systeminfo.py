@@ -3,12 +3,9 @@
 # Modifications: imports adapted to reg2es.plugins; unused CLI display helpers removed.
 
 # Plugin written by Tim Taylor, timtaylor3@yahoo.com
-import struct
 from datetime import datetime, timezone
 
-from Registry.RegistryParse import parse_windows_timestamp
-
-from reg2es.plugins import BasePlugin, PluginResult
+from reg2es.plugins import BasePlugin, PluginResult, filetime_to_datetime
 
 
 class Plugin(BasePlugin):
@@ -48,23 +45,59 @@ class Plugin(BasePlugin):
                     yield res
 
                 if v.name() == "ShutdownTime":
-                    binary = struct.unpack("<Q", v.value())[0]
-                    dt = parse_windows_timestamp(binary)
-                    last_shutdown = dt.isoformat("T") + "Z"
                     res = PluginResult(key=key, value=v)
-                    res.custom["value"] = "Last Shutdown Time:\t{0}".format(
-                        last_shutdown
-                    )
+                    try:
+                        parsed = filetime_to_datetime(v.value())
+                        if parsed is None:
+                            raise ValueError("ShutdownTime is malformed or sentinel")
+                        dt_utc, binary = parsed
+                        last_shutdown = dt_utc.isoformat("T").replace("+00:00", "Z")
+                        res.custom["value"] = "Last Shutdown Time:\t{0}".format(
+                            last_shutdown
+                        )
+                        res.set_event_time(
+                            dt_utc,
+                            source="ShutdownTime",
+                            meaning="shutdown",
+                            precision="microseconds",
+                            raw=binary,
+                        )
+                    except (TypeError, ValueError, OverflowError) as exc:
+                        res.custom["value"] = "Last Shutdown Time:\tN/A"
+                        res.mark_timestamp_fallback("invalid_shutdowntime_filetime")
+                        self.warning(
+                            f"plugin=systeminfo hive={self.hive_name} path={self.hive_path} "
+                            f"invalid ShutdownTime: {exc}"
+                        )
                     yield res
 
                 if v.name() == "InstallDate":
                     res = PluginResult(key=key, value=v)
-                    install_date = (
-                        datetime.fromtimestamp(v.value(), tz=timezone.utc)
-                        .isoformat("T")
-                        .replace("+00:00", "Z")
-                    )
-                    res.custom["value"] = "Install Date:\t\t{0}".format(install_date)
+                    try:
+                        unix_time = v.value()
+                        if not isinstance(unix_time, (int, float)) or unix_time <= 0:
+                            raise ValueError("InstallDate is missing or a sentinel")
+                        install_date = (
+                            datetime.fromtimestamp(unix_time, tz=timezone.utc)
+                            .isoformat("T")
+                            .replace("+00:00", "Z")
+                        )
+                        res.custom["value"] = "Install Date:\t\t{0}".format(
+                            install_date
+                        )
+                        res.set_event_time(
+                            unix_time,
+                            source="InstallDate",
+                            meaning="os_installation",
+                            precision="seconds",
+                        )
+                    except (TypeError, ValueError, OverflowError, OSError) as exc:
+                        res.custom["value"] = "Install Date:\t\tN/A"
+                        res.mark_timestamp_fallback("invalid_installdate_unix_time")
+                        self.warning(
+                            f"plugin=systeminfo hive={self.hive_name} path={self.hive_path} "
+                            f"invalid InstallDate: {exc}"
+                        )
                     yield res
 
                 if v.name() == "RegisteredOwner":
@@ -95,7 +128,9 @@ class Plugin(BasePlugin):
 
                     for entry in key2.values():
                         if entry.name() == "IPAddress":
-                            res = PluginResult(key=key, value=entry)
+                            # The IP value belongs to the interface subkey;
+                            # retain that key's LastWrite as the fallback.
+                            res = PluginResult(key=key2, value=entry)
                             ip_address = entry.value()
                             if ip_address != "":
                                 res.custom["value"] = "IP Address:\t\t{0}".format(
@@ -104,7 +139,7 @@ class Plugin(BasePlugin):
                                 yield res
 
                         if entry.name() == "DhcpIPAddress":
-                            res = PluginResult(key=key, value=entry)
+                            res = PluginResult(key=key2, value=entry)
                             ip_address = entry.value()
                             res.custom["value"] = "IP Address:\t\t{0}".format(
                                 ip_address

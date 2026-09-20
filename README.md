@@ -166,6 +166,95 @@ Each plugin result becomes one ECS-oriented document. Standard `event`,
 Lossless plugin-specific data and the original offline-hive location are kept
 under `reg2es`.
 
+When a plugin can parse the time represented by its record, that UTC-aware time
+is used for `@timestamp`. Otherwise the registry key's LastWrite is used, with
+the legacy `btime` value as a final fallback. The original LastWrite and other
+MACB values remain under `reg2es.timestamps` and `reg2es.timestamp_iso`; the
+selection and its meaning are recorded in `reg2es.timestamp` (`source`,
+`meaning`, `precision`, and `fallback_reason`). Unknown, malformed, sentinel,
+or timezone-free values are retained as raw/custom data and fall back to
+LastWrite instead of being guessed as UTC. A missing valid time omits
+`@timestamp` rather than using the current time. FILETIME conversion uses
+integer arithmetic; `datetime` output is microsecond precision and the raw
+100-nanosecond value is retained when available.
+
+Artifact times are currently used for UserAssist execution, shutdown and OS
+installation records, ShimCache target-file modification, TypedURLsTime,
+Office TrustRecords macro enabling, Scheduled Task DynamicInfo, SAM local-user
+last login, and installed KB packages. TeamViewer startup and uninstall dates
+remain raw fallback candidates when their format or meaning is not confirmed.
+
+SAM local-user times currently support the verified 80-byte, revision-3 `F`
+layout. Short records, other layouts, and RID mismatches retain their raw data
+and use LastWrite with an explicit reason. KB installation-time halves are
+retained independently when either value is missing.
+
+ShimCache preserves every Windows 8/10 entry. Legacy-format deduplication uses
+the original FILETIME and other parsed evidence, so entries differing within
+the same second remain distinct. Raw ShimCache time/size fields use decimal
+strings to preserve unsigned values without Elasticsearch integer overflow.
+
+### Per-plugin `@timestamp` source
+
+`key.last_write` / `registry_key_modified` means the plugin has no confirmed
+intrinsic time for its record and falls back to the registry key LastWrite.
+
+| Plugin | Hive(s) | `@timestamp` source | Meaning | Precision |
+| --- | --- | --- | --- | --- |
+| `antivirus` | SOFTWARE | `key.last_write` | `registry_key_modified` | — |
+| `auditpol` | SECURITY | `key.last_write` | `registry_key_modified` | — |
+| `compname` | SYSTEM | `key.last_write` | `registry_key_modified` | — |
+| `env` | SYSTEM, SOFTWARE, NTUSER.DAT | `key.last_write` | `registry_key_modified` | — |
+| `filedialogmru` | NTUSER.DAT | `key.last_write` | `registry_key_modified` | — |
+| `gpo` | SOFTWARE, NTUSER.DAT | `key.last_write` | `registry_key_modified` | — |
+| `kb` | SOFTWARE | `InstallTimeHigh/InstallTimeLow` | `kb_installation` | `microseconds` |
+| `kb` | SOFTWARE | `key.last_write` | `registry_key_modified` | — |
+| `keyboard` | NTUSER.DAT | `key.last_write` | `registry_key_modified` | — |
+| `lastloggedon` | SOFTWARE | `key.last_write` | `registry_key_modified` | — |
+| `lastshutdown` | SYSTEM | `ShutdownTime` | `shutdown` | `microseconds` |
+| `lastshutdown` | SYSTEM | `key.last_write` | `registry_key_modified` | — |
+| `localgroups` | SOFTWARE, SAM | `key.last_write` | `registry_key_modified` | — |
+| `localusers` | SAM | `SAM.Users.F.last_login` | `user_last_login` | `microseconds` |
+| `localusers` | SAM | `key.last_write` | `registry_key_modified` | — |
+| `mndmru` | NTUSER.DAT | `key.last_write` | `registry_key_modified` | — |
+| `mstscmru` | NTUSER.DAT | `key.last_write` | `registry_key_modified` | — |
+| `office_macros` | NTUSER.DAT | `TrustRecords.ts_enabled` | `office_document_macros_enabled` | `minute` |
+| `office_macros` | NTUSER.DAT | `key.last_write` | `registry_key_modified` | — |
+| `portproxy` | SYSTEM | `key.last_write` | `registry_key_modified` | — |
+| `printer_history` | NTUSER.DAT | `key.last_write` | `registry_key_modified` | — |
+| `printer_ports` | SOFTWARE | `key.last_write` | `registry_key_modified` | — |
+| `proxy` | NTUSER.DAT | `key.last_write` | `registry_key_modified` | — |
+| `putty` | NTUSER.DAT | `key.last_write` | `registry_key_modified` | — |
+| `rdphint` | NTUSER.DAT | `key.last_write` | `registry_key_modified` | — |
+| `recentdocs` | NTUSER.DAT | `key.last_write` | `registry_key_modified` | — |
+| `regtime` | ALL | `key.last_write` | `registry_key_modified` | — |
+| `run` | NTUSER.DAT, SOFTWARE | `key.last_write` | `registry_key_modified` | — |
+| `runmru` | NTUSER.DAT | `key.last_write` | `registry_key_modified` | — |
+| `services` | SYSTEM | `key.last_write` | `registry_key_modified` | — |
+| `shimcache` | SYSTEM | `ShimCache.file_mtime` | `target_file_modified` | `microseconds` |
+| `shimcache` | SYSTEM | `key.last_write` | `registry_key_modified` | — |
+| `srum` | SOFTWARE | `key.last_write` | `registry_key_modified` | — |
+| `sysinternals` | NTUSER.DAT | `key.last_write` | `registry_key_modified` | — |
+| `systeminfo` | SYSTEM | `ShutdownTime` | `shutdown` | `microseconds` |
+| `systeminfo` | SOFTWARE | `InstallDate` | `os_installation` | `seconds` |
+| `systeminfo` | SYSTEM, SOFTWARE | `key.last_write` | `registry_key_modified` | — |
+| `tasks` | SOFTWARE | `TaskCache.DynamicInfo.last_start` | `scheduled_task_last_run` | `microseconds` |
+| `tasks` | SOFTWARE | `TaskCache.DynamicInfo.created` | `scheduled_task_created` | `microseconds` |
+| `tasks` | SOFTWARE | `key.last_write` | `registry_key_modified` | — |
+| `teamviewer` | SOFTWARE | `key.last_write` | `registry_key_modified` | — |
+| `timezone` | SYSTEM | `key.last_write` | `registry_key_modified` | — |
+| `typedurls` | NTUSER.DAT | `TypedURLsTime` | `url_typed` | `microseconds` |
+| `typedurls` | NTUSER.DAT | `key.last_write` | `registry_key_modified` | — |
+| `uninstall` | SOFTWARE | `key.last_write` | `registry_key_modified` | — |
+| `userassist` | NTUSER.DAT | `UAObject.last_exec` | `program_execution` | `microseconds` |
+| `userassist` | NTUSER.DAT | `key.last_write` | `registry_key_modified` | — |
+| `usersids` | SOFTWARE | `key.last_write` | `registry_key_modified` | — |
+| `version` | SOFTWARE | `key.last_write` | `registry_key_modified` | — |
+
+The `fallback_reason` field explains why a row used `key.last_write` (for
+example `intrinsic_time_unavailable`, `invalid_shutdowntime_filetime`, or
+`typedurls_time_missing`).
+
 Binary registry values report their size in `registry.data.bytes`; their raw
 hex is preserved once in `reg2es.value_data`. Parsed fields remain under
 `reg2es.custom`, and RecentDocs names are also exposed as ECS `file.name`.
@@ -255,6 +344,8 @@ v2.0.3 by Airbus CERT, licensed under Apache License 2.0.
 - Repository: <https://github.com/airbus-cert/regrippy>
 - Vendored components:
   - `src/reg2es/plugins/base.py` — BasePlugin, PluginResult, mactime
+  - Timestamp selection and artifact-time parsing in bundled plugins are
+    reg2es changes; upstream LastWrite values remain preserved as provenance.
   - `src/reg2es/plugins/*.py` — 38 registry analysis plugins
   - `src/reg2es/plugins/shimcache.py` — Shim Cache plugin with its parser
     (original copyright: Andrew Davis, Mandiant 2012)

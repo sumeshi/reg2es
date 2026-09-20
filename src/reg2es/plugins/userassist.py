@@ -5,7 +5,7 @@
 import codecs
 import re
 
-from reg2es.plugins import BasePlugin, PluginResult
+from reg2es.plugins import BasePlugin, PluginResult, filetime_to_datetime
 
 GUIDS = [
     # Windows XP
@@ -36,8 +36,39 @@ class Plugin(BasePlugin):
             count_key = subkey.subkey("Count")
             for entry in count_key.values():
                 res = PluginResult(key=count_key, value=entry)
-                res.custom["userassist"] = UAObject(entry.name(), entry.value())
+                ua = UAObject(entry.name(), entry.value())
+                res.custom["userassist"] = ua
+                raw_offset = 8 if len(ua._raw) == UAObject.LENGTH_WINXP else 60
+                raw_filetime = (
+                    int.from_bytes(
+                        ua._raw[raw_offset : raw_offset + 8],
+                        byteorder="little",
+                        signed=False,
+                    )
+                    if len(ua._raw) in (UAObject.LENGTH_WINXP, UAObject.LENGTH_WIN7)
+                    else None
+                )
+                parsed_time = (
+                    filetime_to_datetime(raw_filetime)
+                    if raw_filetime is not None
+                    else None
+                )
+                if parsed_time is not None:
+                    res.set_event_time(
+                        parsed_time[0],
+                        source="UAObject.last_exec",
+                        meaning="program_execution",
+                        precision="microseconds",
+                        raw=parsed_time[1],
+                    )
+                else:
+                    res.mark_timestamp_fallback("invalid_or_missing_userassist_time")
+                    self.warning(
+                        f"plugin=userassist hive={self.hive_name} path={self.hive_path} "
+                        f"invalid or missing UserAssist time for {entry.name()}"
+                    )
                 yield res
+
 
 class UAObject(object):
     LENGTH_WINXP = 16
@@ -73,6 +104,8 @@ class UAObject(object):
         return int.from_bytes(self._raw[12:16], byteorder="little")
 
     def _read_last_exec(self):
+        if len(self._raw) not in (UAObject.LENGTH_WINXP, UAObject.LENGTH_WIN7):
+            return 0
         timestamp = 0
         if len(self._raw) == UAObject.LENGTH_WINXP:
             timestamp = int.from_bytes(
@@ -83,10 +116,10 @@ class UAObject(object):
                 self._raw[60:68], byteorder="little", signed=False
             )
 
-        no_nano = (
-            timestamp // 10000000
-        )  # 10000000 - 100 nanosecond intervals in windows timestamp, remove them to get to seconds since windows epoch
-        unix = no_nano - 11644473600  # number of seconds between 1/1/1601 and 1/1/1970
+        # Keep the fractional second represented by FILETIME.
+        # Subtract FILETIME epochs while still in integer units; subtracting
+        # two large floating point seconds would discard the sub-second part.
+        unix = (timestamp - 116444736000000000) / 10000000
 
         return max(0, unix)  # sometimes "timestamp" is 0, so it gives weird numbers
 

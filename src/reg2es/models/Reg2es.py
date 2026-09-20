@@ -19,6 +19,7 @@ import pkgutil
 import re
 import shutil
 import tempfile
+import math
 from copy import deepcopy
 from datetime import datetime, timezone
 from enum import Enum
@@ -408,13 +409,35 @@ def _normalize_value(value: Any) -> Any:
 
 
 def _timestamp_to_iso(value: Any) -> Optional[str]:
-    """Convert a positive Unix timestamp to UTC ISO 8601, if valid."""
-    if not isinstance(value, (int, float)) or value <= 0:
+    """Convert an aware datetime or positive Unix timestamp to UTC ISO 8601."""
+    if isinstance(value, datetime):
+        if value.tzinfo is None or value.utcoffset() is None:
+            return None
+        try:
+            normalized = value.astimezone(timezone.utc)
+            if normalized.timestamp() <= 0:
+                return None
+            return normalized.isoformat()
+        except (OSError, OverflowError, ValueError):
+            return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     try:
+        if not math.isfinite(value) or value <= 0:
+            return None
         return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
     except (OSError, OverflowError, ValueError):
         return None
+
+
+def _timestamp_raw_text(value: Any) -> Optional[str]:
+    """Serialize timestamp provenance raw values to one stable text type."""
+    if value is None:
+        return None
+    normalized = _normalize_value(value)
+    if isinstance(normalized, str):
+        return normalized
+    return str(normalized)
 
 
 _ECS_HKLM_HIVES = {
@@ -475,8 +498,52 @@ def plugin_result_to_document(
 
     Preserves all PluginResult fields including custom and value_data.
     """
-    # Timestamp: prefer mtime, fallback to btime.
-    timestamp = _timestamp_to_iso(result.mtime) or _timestamp_to_iso(result.btime)
+    # Timestamp: prefer a plugin-owned artifact time, then LastWrite, then
+    # the legacy creation-time fallback.  None of these values is synthesized.
+    event_timestamp = _timestamp_to_iso(result.event_time)
+    mtime_timestamp = _timestamp_to_iso(result.mtime)
+    btime_timestamp = _timestamp_to_iso(result.btime)
+    if event_timestamp is not None:
+        timestamp = event_timestamp
+        timestamp_source = result.event_time_source or "plugin.event_time"
+        timestamp_meaning = result.event_time_meaning or "artifact_event"
+        timestamp_precision = result.event_time_precision
+        fallback_reason = None
+        timestamp_raw = result.event_time_raw
+    elif mtime_timestamp is not None:
+        timestamp = mtime_timestamp
+        timestamp_source = "key.last_write"
+        timestamp_meaning = "registry_key_modified"
+        timestamp_precision = (
+            "subsecond" if isinstance(result.mtime, float) else "seconds"
+        )
+        fallback_reason = result.timestamp_fallback_reason
+        if (
+            fallback_reason == "intrinsic_time_unavailable"
+            and result.event_time is not None
+        ):
+            fallback_reason = "invalid_event_time"
+        timestamp_raw = result.mtime
+    elif btime_timestamp is not None:
+        timestamp = btime_timestamp
+        timestamp_source = "result.btime"
+        timestamp_meaning = "registry_record_created"
+        timestamp_precision = (
+            "subsecond" if isinstance(result.btime, float) else "seconds"
+        )
+        fallback_reason = "last_write_unavailable"
+        timestamp_raw = result.btime
+    else:
+        timestamp = None
+        timestamp_source = None
+        timestamp_meaning = None
+        timestamp_precision = None
+        fallback_reason = (
+            result.timestamp_fallback_reason
+            if result.timestamp_fallback_reason != "intrinsic_time_unavailable"
+            else "no_valid_timestamp"
+        )
+        timestamp_raw = None
 
     registry_hive, registry_key, registry_path = _ecs_registry_location(
         hive_name, result.path
@@ -510,6 +577,16 @@ def plugin_result_to_document(
     }
     if timestamp is not None:
         doc["@timestamp"] = timestamp
+    timestamp_meta = {
+        "source": timestamp_source,
+        "meaning": timestamp_meaning,
+        "fallback_reason": fallback_reason,
+    }
+    if timestamp_precision is not None:
+        timestamp_meta["precision"] = timestamp_precision
+    if timestamp_raw is not None:
+        timestamp_meta["raw"] = _timestamp_raw_text(timestamp_raw)
+    doc["reg2es"]["timestamp"] = timestamp_meta
 
     # Value fields.
     if result.value_name is not None:

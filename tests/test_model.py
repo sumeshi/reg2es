@@ -59,9 +59,9 @@ def test_plugin_discovery_and_selection() -> None:
 
     defaults = resolve_plugin_names(None, discovered)
     assert "regtime" not in [name for name, _plugin in defaults]
-    assert [name for name, _plugin in resolve_plugin_names(["regtime"], discovered)] == [
-        "regtime"
-    ]
+    assert [
+        name for name, _plugin in resolve_plugin_names(["regtime"], discovered)
+    ] == ["regtime"]
 
     with pytest.raises(ValueError, match="Unknown plugin"):
         resolve_plugin_names(["missing"], discovered)
@@ -241,9 +241,7 @@ def test_unsupported_old_log_advises_external_recovery_and_cleans_temp(
     def reject_old_log(_primary, _log_path):
         raise RegistryParse.NotSupportedException("Old transaction log")
 
-    monkeypatch.setattr(
-        "reg2es.models.Reg2es.RegistryLog.RegistryLog", reject_old_log
-    )
+    monkeypatch.setattr("reg2es.models.Reg2es.RegistryLog.RegistryLog", reject_old_log)
 
     with pytest.raises(RegistryRecoveryError, match=r"rla\.exe"):
         _prepare_registry_hive(hive)
@@ -252,7 +250,9 @@ def test_unsupported_old_log_advises_external_recovery_and_cleans_temp(
     assert hive.read_bytes() == b"dirty evidence"
 
 
-def test_dataset_excludes_logs_and_removes_recovered_temp(tmp_path, monkeypatch) -> None:
+def test_dataset_excludes_logs_and_removes_recovered_temp(
+    tmp_path, monkeypatch
+) -> None:
     hive = tmp_path / "SYSTEM"
     transaction_log = tmp_path / "SYSTEM.LOG1"
     recovered = tmp_path / "recovered.hive"
@@ -319,9 +319,7 @@ def test_recovery_metadata_is_added_to_documents() -> None:
     ):
         chunks = list(runner.gen_records())
 
-    assert chunks[0][0]["log"]["file"]["path"] == str(
-        Path("/host/SYSTEM").resolve()
-    )
+    assert chunks[0][0]["log"]["file"]["path"] == str(Path("/host/SYSTEM").resolve())
     assert chunks[0][0]["reg2es"]["recovery"] == recovery
 
 
@@ -430,6 +428,77 @@ def test_ecs_document_omits_unknown_timestamp() -> None:
         "key": "Software\\Example",
         "path": "HKCU\\Software\\Example",
     }
+
+
+def test_artifact_timestamp_precedes_last_write_and_preserves_both() -> None:
+    key = RegistryKeyMock.build("Control\\Test")
+    result = PluginResult(key=key)
+    result.set_event_time(
+        datetime(2020, 1, 2, 3, 4, 5, 123456, tzinfo=timezone.utc),
+        source="ShutdownTime",
+        meaning="shutdown",
+        precision="microseconds",
+        raw=132_223_214_451_234_560,
+    )
+
+    document = plugin_result_to_document(result, "example", "SYSTEM", "/host/SYSTEM")
+
+    assert document["@timestamp"] == "2020-01-02T03:04:05.123456+00:00"
+    assert document["reg2es"]["timestamp"] == {
+        "source": "ShutdownTime",
+        "meaning": "shutdown",
+        "fallback_reason": None,
+        "precision": "microseconds",
+        "raw": "132223214451234560",
+    }
+    assert document["reg2es"]["timestamps"]["modified"] == result.mtime
+    assert document["reg2es"]["timestamp_iso"]["modified"].endswith("+00:00")
+
+
+def test_invalid_artifact_time_falls_back_with_reason() -> None:
+    key = RegistryKeyMock.build("Control\\Test")
+    result = PluginResult(key=key)
+    result.set_event_time(
+        datetime(2020, 1, 2, 3, 4, 5),
+        source="TypedURLsTime",
+        meaning="url_typed",
+        precision="microseconds",
+    )
+    result.mark_timestamp_fallback("invalid_typedurls_time")
+
+    document = plugin_result_to_document(
+        result, "typedurls", "NTUSER.DAT", "/host/NTUSER.DAT"
+    )
+
+    assert document["@timestamp"]
+    assert document["reg2es"]["timestamp"]["source"] == "key.last_write"
+    assert (
+        document["reg2es"]["timestamp"]["fallback_reason"] == "invalid_typedurls_time"
+    )
+
+
+@pytest.mark.parametrize("value", [0, -1, True, float("nan"), float("inf"), 10**1000])
+def test_invalid_artifact_time_is_rejected_without_plugin_hint(value) -> None:
+    result = PluginResult()
+    result.mtime = 100
+    result.set_event_time(value, source="test", meaning="test")
+    document = plugin_result_to_document(result, "example", "SYSTEM", "-")
+    assert document["@timestamp"] == "1970-01-01T00:01:40+00:00"
+    assert document["reg2es"]["timestamp"]["fallback_reason"] == "invalid_event_time"
+
+
+def test_creation_time_fallback_and_absent_time_have_explicit_reasons() -> None:
+    result = PluginResult()
+    result.btime = 100
+    document = plugin_result_to_document(result, "example", "SYSTEM", "-")
+    assert document["reg2es"]["timestamp"]["source"] == "result.btime"
+    assert (
+        document["reg2es"]["timestamp"]["fallback_reason"] == "last_write_unavailable"
+    )
+    result.btime = 0
+    document = plugin_result_to_document(result, "example", "SYSTEM", "-")
+    assert "@timestamp" not in document
+    assert document["reg2es"]["timestamp"]["fallback_reason"] == "no_valid_timestamp"
 
 
 def test_missing_plugin_key_is_not_logged() -> None:

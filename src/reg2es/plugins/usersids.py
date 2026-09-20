@@ -31,7 +31,7 @@ class Plugin(BasePlugin):
 
             for entry in key2.values():
                 if entry.name() == "ProfileImagePath":
-                    res = PluginResult(key=key, value=entry)
+                    res = PluginResult(key=key2, value=entry)
                     user_name = entry.value().split("\\")[-1]
                     res.custom["value"] = "{}:\t{}".format(user_name, key2.name())
                     yield res

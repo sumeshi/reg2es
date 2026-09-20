@@ -26,12 +26,19 @@ class Plugin(BasePlugin):
 
         values = [x.name() for x in k.values()]
 
+        startup = (
+            k.value("LastStartupTime").value() if "LastStartupTime" in values else None
+        )
         r.custom = {
             "AlwaysOnline": k.value("Always_Online").value() == 1,
             "ClientID": k.value("ClientID").value(),
-            "LastStartupTime": k.value("LastStartupTime")
-            if "LastStartupTime" in values
-            else -1,
+            "LastStartupTime": startup if startup is not None else -1,
             "Version": k.value("Version").value(),
+            "timestamp_investigation": {
+                "status": "unconfirmed",
+                "candidate": "LastStartupTime",
+                "fallback": "key.last_write",
+            },
         }
+        r.mark_timestamp_fallback("teamviewer_startup_time_format_unconfirmed")
         yield r

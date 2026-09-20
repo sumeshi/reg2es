@@ -3,11 +3,7 @@
 # Modifications: imports adapted to reg2es.plugins; unused CLI display helpers removed.
 
 # Plugin written by Tim Taylor, timtaylor3@yahoo.com
-import struct
-
-from Registry.RegistryParse import parse_windows_timestamp
-
-from reg2es.plugins import BasePlugin, PluginResult
+from reg2es.plugins import BasePlugin, PluginResult, filetime_to_datetime
 
 
 class Plugin(BasePlugin):
@@ -23,9 +19,26 @@ class Plugin(BasePlugin):
 
         for v in key.values():
             if v.name() == "ShutdownTime":
-                binary = struct.unpack("<Q", v.value())[0]
-                dt = parse_windows_timestamp(binary)
-                value = dt.isoformat("T") + "Z"
                 res = PluginResult(key=key, value=v)
-                res.custom["LastShutdownTime"] = value
+                try:
+                    parsed = filetime_to_datetime(v.value())
+                    if parsed is None:
+                        raise ValueError("ShutdownTime is malformed or sentinel")
+                    dt_utc, binary = parsed
+                    value = dt_utc.isoformat("T").replace("+00:00", "Z")
+                    res.custom["LastShutdownTime"] = value
+                    res.set_event_time(
+                        dt_utc,
+                        source="ShutdownTime",
+                        meaning="shutdown",
+                        precision="microseconds",
+                        raw=binary,
+                    )
+                except (TypeError, ValueError, OverflowError) as exc:
+                    res.custom["LastShutdownTime"] = "N/A"
+                    res.mark_timestamp_fallback("invalid_shutdowntime_filetime")
+                    self.warning(
+                        f"plugin=lastshutdown hive={self.hive_name} path={self.hive_path} "
+                        f"invalid ShutdownTime: {exc}"
+                    )
                 yield res

@@ -28,7 +28,23 @@ class Plugin(BasePlugin):
             except Registry.RegistryValueNotFoundException:
                 uninstall_string = "[N/A]"
 
+            try:
+                install_date = program.value("InstallDate").value()
+            except Registry.RegistryValueNotFoundException:
+                install_date = None
+
             res = PluginResult(key=program)
             res.custom["display_name"] = display_name
             res.custom["uninstall_string"] = uninstall_string
+            res.custom["install_date_raw"] = install_date
+            res.custom["timestamp_investigation"] = {
+                "status": "unconfirmed",
+                "candidate": "InstallDate",
+                "fallback": "key.last_write",
+                "reason": "date-only values may describe install, update, or repair",
+                "precision": "date" if isinstance(install_date, str) else "unknown",
+            }
+            res.mark_timestamp_fallback(
+                "uninstall_installdate_precision_or_meaning_unconfirmed"
+            )
             yield res
