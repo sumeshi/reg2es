@@ -470,9 +470,6 @@ _ECS_REGISTRY_TYPES = {
     "RegQWord": "REG_QWORD",
 }
 
-_ECS_VERSION = "8.17.0"
-
-
 def _join_registry_path(*parts: Optional[str]) -> str:
     return "\\".join(part.strip("\\") for part in parts if part)
 
@@ -572,7 +569,6 @@ def plugin_result_to_document(
     if result.value_name is not None:
         registry_path = _join_registry_path(registry_path, result.value_name)
     doc: dict = {
-        "ecs": {"version": _ECS_VERSION},
         "event": {
             "kind": "event",
             "category": ["registry"],

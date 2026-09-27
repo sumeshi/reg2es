@@ -156,8 +156,7 @@ result: list[dict] = reg2json(
 
 ## Output Format Example
 
-Each plugin result becomes one document with `ecs.version` set to `8.17.0`.
-Standard `event`,
+Each plugin result becomes one document. Standard `event`,
 `registry`, `log.file`, `tags`, and `@timestamp` fields describe the artifact.
 Lossless plugin-specific data and the original offline-hive location are kept
 under `reg2es`.
@@ -175,7 +174,6 @@ these fields; use a new index for the updated output.
 
 ```json
 {
-  "ecs": {"version": "8.17.0"},
   "@timestamp": "2015-10-30T07:24:57.814133+00:00",
   "event": {
     "kind": "event",

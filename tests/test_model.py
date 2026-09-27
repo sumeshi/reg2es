@@ -386,7 +386,6 @@ def test_plugin_result_conversion_is_ecs_shaped_and_lossless() -> None:
         "bytes": "3q0=",
     }
     assert base64.b64decode(document["registry"]["data"]["bytes"]) == b"\xde\xad"
-    assert document["ecs"]["version"] == "8.17.0"
     assert document["registry"]["path"] == "HKLM\\SYSTEM\\Control\\Test\\Payload"
     assert document["reg2es"]["value_type"] == result.value_type
     assert document["reg2es"]["value_size"] == 2
