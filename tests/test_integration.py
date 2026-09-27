@@ -25,7 +25,7 @@ def test_cli_metadata_commands(run_cli, command, option) -> None:
 def test_cli_lists_all_plugins_without_input(run_cli, command) -> None:
     result = run_cli(command, ["--list-plugins"])
     assert result.returncode == 0
-    assert len(result.stdout.strip().splitlines()) == 38
+    assert len(result.stdout.strip().splitlines()) == 41
 
 
 @pytest.mark.parametrize("command", ["reg2es", "reg2json"])

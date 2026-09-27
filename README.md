@@ -8,8 +8,10 @@
 A command-line tool and Python library for extracting forensic artifacts from
 Windows NT Registry (REGF) hives and importing them into Elasticsearch.
 
-The 38 bundled plugins are based on
-[airbus-cert/regrippy](https://github.com/airbus-cert/regrippy). `reg2es` runs
+The original plugin set is based on
+[airbus-cert/regrippy](https://github.com/airbus-cert/regrippy); the package
+also includes reg2es-specific additions. The project also draws inspiration
+from [RegRipper](https://github.com/keydet89/RegRipper3.0). `reg2es` runs
 standalone and does not require the `regrippy` package at runtime. Both
 `reg2es` and `reg2json` use the same plugin runner and emit the same
 ECS-oriented documents.
@@ -67,7 +69,7 @@ unrelated files are not treated as standalone hives.
 - `--plugin NAME`: run one plugin; repeat to select several. By default,
   compatible, default-enabled plugins run. The exhaustive `regtime` plugin is
   opt-in.
-- `--list-plugins`: print the 38 bundled plugins and exit.
+- `--list-plugins`: print the 41 bundled plugins and exit.
 - `--size N`: set the generation and indexing chunk size (default: 500).
 - `--tags tag1,tag2`: add tags to every document.
 - `--quiet`: suppress progress output.
@@ -124,19 +126,12 @@ no output path is specified, the default extension is `.jsonl`:
 reg2json NTUSER.DAT --plugin userassist --format jsonl -o artifacts.jsonl
 ```
 
-Use `--split` to write one output file per plugin that produced results. With
-the default JSON format, each file contains a JSON array. With `--format jsonl`
-or `--format ndjson`, each file contains one JSON object per line. The `-o`
-option names the output directory (the current directory is used by default):
+Use `--split` to write one file per plugin. With `--split`, `-o` names the
+output directory:
 
 ```bash
 reg2json collected-hives/ --split -o artifacts/
 ```
-
-For example, the command above produces files such as
-`artifacts/antivirus.json`, `artifacts/services.json`, and
-`artifacts/userassist.json`. Plugins with no results do not produce an empty
-file.
 
 The exhaustive `regtime` timeline is excluded from the default plugin set
 because it emits one record for every registry key. Run it explicitly when
@@ -161,106 +156,26 @@ result: list[dict] = reg2json(
 
 ## Output Format Example
 
-Each plugin result becomes one ECS-oriented document. Standard `event`,
+Each plugin result becomes one document with `ecs.version` set to `8.17.0`.
+Standard `event`,
 `registry`, `log.file`, `tags`, and `@timestamp` fields describe the artifact.
 Lossless plugin-specific data and the original offline-hive location are kept
 under `reg2es`.
 
-When a plugin can parse the time represented by its record, that UTC-aware time
-is used for `@timestamp`. Otherwise the registry key's LastWrite is used, with
-the legacy `btime` value as a final fallback. The original LastWrite and other
-MACB values remain under `reg2es.timestamps` and `reg2es.timestamp_iso`; the
-selection and its meaning are recorded in `reg2es.timestamp` (`source`,
-`meaning`, `precision`, and `fallback_reason`). Unknown, malformed, sentinel,
-or timezone-free values are retained as raw/custom data and fall back to
-LastWrite instead of being guessed as UTC. A missing valid time omits
-`@timestamp` rather than using the current time. FILETIME conversion uses
-integer arithmetic; `datetime` output is microsecond precision and the raw
-100-nanosecond value is retained when available.
+When a plugin has a reliable artifact time, it uses that time for `@timestamp`.
+Otherwise it uses the registry key's LastWrite; if no valid time exists,
+`@timestamp` is omitted. Check `reg2es.timestamp.source` and
+`reg2es.timestamp.meaning` before treating a result as an activity time.
+Original values and fallback reasons remain in the document.
 
-Artifact times are currently used for UserAssist execution, shutdown and OS
-installation records, ShimCache target-file modification, TypedURLsTime,
-Office TrustRecords macro enabling, Scheduled Task DynamicInfo, SAM local-user
-last login, and installed KB packages. TeamViewer startup and uninstall dates
-remain raw fallback candidates when their format or meaning is not confirmed.
-
-SAM local-user times currently support the verified 80-byte, revision-3 `F`
-layout. Short records, other layouts, and RID mismatches retain their raw data
-and use LastWrite with an explicit reason. KB installation-time halves are
-retained independently when either value is missing.
-
-ShimCache preserves every Windows 8/10 entry. Legacy-format deduplication uses
-the original FILETIME and other parsed evidence, so entries differing within
-the same second remain distinct. Raw ShimCache time/size fields use decimal
-strings to preserve unsigned values without Elasticsearch integer overflow.
-
-### Per-plugin `@timestamp` source
-
-`key.last_write` / `registry_key_modified` means the plugin has no confirmed
-intrinsic time for its record and falls back to the registry key LastWrite.
-
-| Plugin | Hive(s) | `@timestamp` source | Meaning | Precision |
-| --- | --- | --- | --- | --- |
-| `antivirus` | SOFTWARE | `key.last_write` | `registry_key_modified` | — |
-| `auditpol` | SECURITY | `key.last_write` | `registry_key_modified` | — |
-| `compname` | SYSTEM | `key.last_write` | `registry_key_modified` | — |
-| `env` | SYSTEM, SOFTWARE, NTUSER.DAT | `key.last_write` | `registry_key_modified` | — |
-| `filedialogmru` | NTUSER.DAT | `key.last_write` | `registry_key_modified` | — |
-| `gpo` | SOFTWARE, NTUSER.DAT | `key.last_write` | `registry_key_modified` | — |
-| `kb` | SOFTWARE | `InstallTimeHigh/InstallTimeLow` | `kb_installation` | `microseconds` |
-| `kb` | SOFTWARE | `key.last_write` | `registry_key_modified` | — |
-| `keyboard` | NTUSER.DAT | `key.last_write` | `registry_key_modified` | — |
-| `lastloggedon` | SOFTWARE | `key.last_write` | `registry_key_modified` | — |
-| `lastshutdown` | SYSTEM | `ShutdownTime` | `shutdown` | `microseconds` |
-| `lastshutdown` | SYSTEM | `key.last_write` | `registry_key_modified` | — |
-| `localgroups` | SOFTWARE, SAM | `key.last_write` | `registry_key_modified` | — |
-| `localusers` | SAM | `SAM.Users.F.last_login` | `user_last_login` | `microseconds` |
-| `localusers` | SAM | `key.last_write` | `registry_key_modified` | — |
-| `mndmru` | NTUSER.DAT | `key.last_write` | `registry_key_modified` | — |
-| `mstscmru` | NTUSER.DAT | `key.last_write` | `registry_key_modified` | — |
-| `office_macros` | NTUSER.DAT | `TrustRecords.ts_enabled` | `office_document_macros_enabled` | `minute` |
-| `office_macros` | NTUSER.DAT | `key.last_write` | `registry_key_modified` | — |
-| `portproxy` | SYSTEM | `key.last_write` | `registry_key_modified` | — |
-| `printer_history` | NTUSER.DAT | `key.last_write` | `registry_key_modified` | — |
-| `printer_ports` | SOFTWARE | `key.last_write` | `registry_key_modified` | — |
-| `proxy` | NTUSER.DAT | `key.last_write` | `registry_key_modified` | — |
-| `putty` | NTUSER.DAT | `key.last_write` | `registry_key_modified` | — |
-| `rdphint` | NTUSER.DAT | `key.last_write` | `registry_key_modified` | — |
-| `recentdocs` | NTUSER.DAT | `key.last_write` | `registry_key_modified` | — |
-| `regtime` | ALL | `key.last_write` | `registry_key_modified` | — |
-| `run` | NTUSER.DAT, SOFTWARE | `key.last_write` | `registry_key_modified` | — |
-| `runmru` | NTUSER.DAT | `key.last_write` | `registry_key_modified` | — |
-| `services` | SYSTEM | `key.last_write` | `registry_key_modified` | — |
-| `shimcache` | SYSTEM | `ShimCache.file_mtime` | `target_file_modified` | `microseconds` |
-| `shimcache` | SYSTEM | `key.last_write` | `registry_key_modified` | — |
-| `srum` | SOFTWARE | `key.last_write` | `registry_key_modified` | — |
-| `sysinternals` | NTUSER.DAT | `key.last_write` | `registry_key_modified` | — |
-| `systeminfo` | SYSTEM | `ShutdownTime` | `shutdown` | `microseconds` |
-| `systeminfo` | SOFTWARE | `InstallDate` | `os_installation` | `seconds` |
-| `systeminfo` | SYSTEM, SOFTWARE | `key.last_write` | `registry_key_modified` | — |
-| `tasks` | SOFTWARE | `TaskCache.DynamicInfo.last_start` | `scheduled_task_last_run` | `microseconds` |
-| `tasks` | SOFTWARE | `TaskCache.DynamicInfo.created` | `scheduled_task_created` | `microseconds` |
-| `tasks` | SOFTWARE | `key.last_write` | `registry_key_modified` | — |
-| `teamviewer` | SOFTWARE | `key.last_write` | `registry_key_modified` | — |
-| `timezone` | SYSTEM | `key.last_write` | `registry_key_modified` | — |
-| `typedurls` | NTUSER.DAT | `TypedURLsTime` | `url_typed` | `microseconds` |
-| `typedurls` | NTUSER.DAT | `key.last_write` | `registry_key_modified` | — |
-| `uninstall` | SOFTWARE | `key.last_write` | `registry_key_modified` | — |
-| `userassist` | NTUSER.DAT | `UAObject.last_exec` | `program_execution` | `microseconds` |
-| `userassist` | NTUSER.DAT | `key.last_write` | `registry_key_modified` | — |
-| `usersids` | SOFTWARE | `key.last_write` | `registry_key_modified` | — |
-| `version` | SOFTWARE | `key.last_write` | `registry_key_modified` | — |
-
-The `fallback_reason` field explains why a row used `key.last_write` (for
-example `intrinsic_time_unavailable`, `invalid_shutdowntime_filetime`, or
-`typedurls_time_missing`).
-
-Binary registry values report their size in `registry.data.bytes`; their raw
-hex is preserved once in `reg2es.value_data`. Parsed fields remain under
-`reg2es.custom`, and RecentDocs names are also exposed as ECS `file.name`.
+The current ECS output changes `registry.data.bytes` from a byte count to
+Base64, uses `REG_*` names in `registry.data.type`, and includes the value
+name in `registry.path`. Existing Elasticsearch mappings may conflict with
+these fields; use a new index for the updated output.
 
 ```json
 {
+  "ecs": {"version": "8.17.0"},
   "@timestamp": "2015-10-30T07:24:57.814133+00:00",
   "event": {
     "kind": "event",
@@ -271,10 +186,10 @@ hex is preserved once in `reg2es.value_data`. Parsed fields remain under
   "registry": {
     "hive": "HKLM",
     "key": "SYSTEM\\ControlSet001\\Control\\ComputerName\\ComputerName",
-    "path": "HKLM\\SYSTEM\\ControlSet001\\Control\\ComputerName\\ComputerName",
-    "value": "ComputerName",
-    "data": {
-      "type": "RegSZ",
+    "path": "HKLM\\SYSTEM\\ControlSet001\\Control\\ComputerName\\ComputerName\\ComputerName",
+      "value": "ComputerName",
+      "data": {
+      "type": "REG_SZ",
       "strings": ["DESKTOP-EXAMPLE"]
     }
   },
@@ -288,7 +203,8 @@ hex is preserved once in `reg2es.value_data`. Parsed fields remain under
       "hive": "SYSTEM",
       "key_path": "ROOT\\ControlSet001\\Control\\ComputerName\\ComputerName"
     },
-    "value_data": "DESKTOP-EXAMPLE"
+    "value_data": "DESKTOP-EXAMPLE",
+    "value_type": "RegSZ"
   }
 }
 ```
@@ -332,28 +248,14 @@ Please report issues and feature requests. :sushi: :sushi: :sushi:
 
 Standalone release ZIPs include `LICENSES.txt` with the project, bundled plugin,
 runtime dependency and build Python license notices. Keep it with the executables
-when redistributing them. The collector excludes development-only dependencies.
+when redistributing them.
 
 **reg2es** is released under the [MIT](LICENSE) License.
 
 ### Third-Party Notices
 
-This product includes code derived from [regrippy](https://github.com/airbus-cert/regrippy)
-v2.0.3 by Airbus CERT, licensed under Apache License 2.0.
-
-- Repository: <https://github.com/airbus-cert/regrippy>
-- Vendored components:
-  - `src/reg2es/plugins/base.py` — BasePlugin, PluginResult, mactime
-  - Timestamp selection and artifact-time parsing in bundled plugins are
-    reg2es changes; upstream LastWrite values remain preserved as provenance.
-  - `src/reg2es/plugins/*.py` — 38 registry analysis plugins
-  - `src/reg2es/plugins/shimcache.py` — Shim Cache plugin with its parser
-    (original copyright: Andrew Davis, Mandiant 2012)
-- Modifications: import paths changed from `regrippy` to `reg2es.plugins` and
-  the formerly separate Shim Cache parser was integrated into its plugin.
-  Unused upstream CLI display helpers were removed; artifact extraction logic
-  remains unchanged.
-- Full license text: [LICENSES/Apache-2.0.txt](LICENSES/Apache-2.0.txt)
-
-We gratefully thank the maintainers and contributors of regrippy,
-python-registry, and the other open-source projects that make reg2es possible.
+This product includes code derived from
+[regrippy v2.0.3](https://github.com/airbus-cert/regrippy) by Airbus CERT,
+licensed under Apache License 2.0. The included ShimCache parser carries
+the original copyright notice of Andrew Davis, Mandiant (2012). See the
+[Apache 2.0 license text](LICENSES/Apache-2.0.txt) and the source-file notices.

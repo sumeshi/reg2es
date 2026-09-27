@@ -21,6 +21,7 @@ PLUGIN_NAMES = [
     "localgroups",
     "localusers",
     "mndmru",
+    "mounteddevices",
     "mstscmru",
     "office_macros",
     "portproxy",
@@ -43,14 +44,16 @@ PLUGIN_NAMES = [
     "timezone",
     "typedurls",
     "uninstall",
+    "usbstor",
     "userassist",
     "usersids",
     "version",
+    "wordwheelquery",
 ]
 
 
 def test_bundled_plugin_inventory_and_imports() -> None:
-    """The package contains and imports exactly the pinned 38 plugins."""
+    """The package contains and imports exactly the pinned 41 plugins."""
     discovered = sorted(
         module.name
         for module in pkgutil.iter_modules(plugins.__path__)

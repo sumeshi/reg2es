@@ -20,6 +20,7 @@ import re
 import shutil
 import tempfile
 import math
+import base64
 from copy import deepcopy
 from datetime import datetime, timezone
 from enum import Enum
@@ -451,6 +452,26 @@ _ECS_HKLM_HIVES = {
     "SYSTEM",
 }
 
+# ECS 8.17.0 registry.data.type uses the Windows REG_* names. Keep this
+# explicit: python-registry's names are useful provenance, but are not ECS
+# values and unknown names must not be guessed into a known type.
+_ECS_REGISTRY_TYPES = {
+    "RegNone": "REG_NONE",
+    "RegSZ": "REG_SZ",
+    "RegExpandSZ": "REG_EXPAND_SZ",
+    "RegBin": "REG_BINARY",
+    "RegDWord": "REG_DWORD",
+    "RegBigEndian": "REG_DWORD_BIG_ENDIAN",
+    "RegLink": "REG_LINK",
+    "RegMultiSZ": "REG_MULTI_SZ",
+    "RegResourceList": "REG_RESOURCE_LIST",
+    "RegFullResourceDescriptor": "REG_FULL_RESOURCE_DESCRIPTOR",
+    "RegResourceRequirementsList": "REG_RESOURCE_REQUIREMENTS_LIST",
+    "RegQWord": "REG_QWORD",
+}
+
+_ECS_VERSION = "8.17.0"
+
 
 def _join_registry_path(*parts: Optional[str]) -> str:
     return "\\".join(part.strip("\\") for part in parts if part)
@@ -548,7 +569,10 @@ def plugin_result_to_document(
     registry_hive, registry_key, registry_path = _ecs_registry_location(
         hive_name, result.path
     )
+    if result.value_name is not None:
+        registry_path = _join_registry_path(registry_path, result.value_name)
     doc: dict = {
+        "ecs": {"version": _ECS_VERSION},
         "event": {
             "kind": "event",
             "category": ["registry"],
@@ -592,16 +616,30 @@ def plugin_result_to_document(
     if result.value_name is not None:
         normalized_data = _normalize_value(result.value_data)
         doc["registry"]["value"] = result.value_name
-        registry_data: dict = {"type": result.value_type}
-        if isinstance(result.value_data, bytes):
-            registry_data["bytes"] = len(result.value_data)
+        registry_data: dict = {}
+        ecs_type = _ECS_REGISTRY_TYPES.get(result.value_type)
+        if ecs_type is not None:
+            registry_data["type"] = ecs_type
+        if result.value_type is not None:
+            doc["reg2es"]["value_type"] = result.value_type
+        if isinstance(result.value_data, (bytes, bytearray, memoryview)):
+            raw_bytes = bytes(result.value_data)
+            registry_data["bytes"] = base64.b64encode(raw_bytes).decode("ascii")
+            doc["reg2es"]["value_size"] = len(raw_bytes)
         elif isinstance(normalized_data, str):
             registry_data["strings"] = [normalized_data]
         elif isinstance(normalized_data, list) and all(
             isinstance(item, str) for item in normalized_data
         ):
             registry_data["strings"] = normalized_data
-        doc["registry"]["data"] = registry_data
+        elif (
+            ecs_type in {"REG_DWORD", "REG_DWORD_BIG_ENDIAN", "REG_QWORD"}
+            and isinstance(result.value_data, int)
+            and not isinstance(result.value_data, bool)
+        ):
+            registry_data["strings"] = [str(result.value_data)]
+        if registry_data:
+            doc["registry"]["data"] = registry_data
         doc["reg2es"]["value_data"] = normalized_data
 
     # Custom fields (lossless).

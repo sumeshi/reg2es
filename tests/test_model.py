@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -378,12 +379,17 @@ def test_plugin_result_conversion_is_ecs_shaped_and_lossless() -> None:
     assert document["event"]["action"] == "example"
     assert document["registry"]["hive"] == "HKLM"
     assert document["registry"]["key"] == "SYSTEM\\Control\\Test"
-    assert document["registry"]["path"] == "HKLM\\SYSTEM\\Control\\Test"
+    assert document["registry"]["path"] == "HKLM\\SYSTEM\\Control\\Test\\Payload"
     assert document["registry"]["value"] == "Payload"
     assert document["registry"]["data"] == {
-        "type": result.value_type,
-        "bytes": 2,
+        "type": "REG_BINARY",
+        "bytes": "3q0=",
     }
+    assert base64.b64decode(document["registry"]["data"]["bytes"]) == b"\xde\xad"
+    assert document["ecs"]["version"] == "8.17.0"
+    assert document["registry"]["path"] == "HKLM\\SYSTEM\\Control\\Test\\Payload"
+    assert document["reg2es"]["value_type"] == result.value_type
+    assert document["reg2es"]["value_size"] == 2
     assert document["reg2es"]["value_data"] == "dead"
     assert document["reg2es"]["custom"]["nested"]["raw"] == "0001"
     payload = orjson.dumps(document)
@@ -428,6 +434,44 @@ def test_ecs_document_omits_unknown_timestamp() -> None:
         "key": "Software\\Example",
         "path": "HKCU\\Software\\Example",
     }
+
+@pytest.mark.parametrize(
+    ("value_type", "value", "expected_type", "expected_strings"),
+    [
+        ("RegSZ", "text", "REG_SZ", ["text"]),
+        ("RegExpandSZ", "%TEMP%", "REG_EXPAND_SZ", ["%TEMP%"]),
+        ("RegMultiSZ", ["first", "", "last"], "REG_MULTI_SZ", ["first", "", "last"]),
+        ("RegDWord", 42, "REG_DWORD", ["42"]),
+        ("RegBigEndian", 0xFFFFFFFF, "REG_DWORD_BIG_ENDIAN", ["4294967295"]),
+        ("RegQWord", 2**64 - 1, "REG_QWORD", [str(2**64 - 1)]),
+    ],
+)
+def test_ecs_registry_data_standard_types(value_type, value, expected_type, expected_strings):
+    result = PluginResult()
+    result.path = "ROOT\\Control\\Test"
+    result.value_name = "Value"
+    result.value_type = value_type
+    result.value_data = value
+
+    document = plugin_result_to_document(result, "example", "SYSTEM", "-")
+
+    assert document["registry"]["data"] == {
+        "type": expected_type,
+        "strings": expected_strings,
+    }
+
+def test_ecs_registry_binary_preserves_empty_bytes_and_unknown_type():
+    result = PluginResult()
+    result.value_name = "Raw"
+    result.value_type = "RegFuture"
+    result.value_data = b""
+
+    document = plugin_result_to_document(result, "example", "SYSTEM", "-")
+
+    assert document["registry"]["data"] == {"bytes": ""}
+    assert document["reg2es"]["value_type"] == "RegFuture"
+    assert document["reg2es"]["value_size"] == 0
+    assert document["reg2es"]["value_data"] == ""
 
 
 def test_artifact_timestamp_precedes_last_write_and_preserves_both() -> None:
