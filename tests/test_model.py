@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import base64
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -20,6 +20,7 @@ from reg2es.models.Reg2es import (
     _build_hive_dataset,
     _close_parsers,
     _normalize_value,
+    _timestamp_to_iso,
     _prepare_registry_hive,
     detect_hive_type,
     discover_plugins,
@@ -352,7 +353,7 @@ def test_normalize_nested_plugin_data_without_stringifying_objects() -> None:
     }
     normalized = _normalize_value(value)
     assert normalized["binary"] == "dead"
-    assert normalized["when"] == "2024-01-01T00:00:00+00:00"
+    assert normalized["when"] == "2024-01-01T00:00:00Z"
     assert normalized["action"] == {"runas": "SYSTEM", "cmd": "cmd.exe"}
     assert normalized["items"] == ["01", {"ok": True}]
 
@@ -377,6 +378,13 @@ def test_plugin_result_conversion_is_ecs_shaped_and_lossless() -> None:
     )
 
     assert document["event"]["action"] == "example"
+    assert document["event"]["provider"] == "registry"
+    assert document["event"]["module"] == "windows"
+    assert document["event"]["dataset"] == "windows.registry"
+    assert document["event"]["kind"] == "event"
+    assert document["event"]["category"] == ["registry"]
+    assert document["event"]["type"] == ["info"]
+    assert document["tags"] == ["registry"]
     assert document["registry"]["hive"] == "HKLM"
     assert document["registry"]["key"] == "SYSTEM\\Control\\Test"
     assert document["registry"]["path"] == "HKLM\\SYSTEM\\Control\\Test\\Payload"
@@ -399,6 +407,80 @@ def test_plugin_result_conversion_is_ecs_shaped_and_lossless() -> None:
         "hive": "SYSTEM",
         "key_path": "\\ROOT\\Control\\Test",
     }
+
+
+@pytest.mark.parametrize(
+    ("tags", "expected"),
+    [
+        (None, ["registry"]),
+        ("host-01, registry, case-42", ["registry", "host-01", "case-42"]),
+        (["host-01", "registry", "host-01"], ["registry", "host-01"]),
+        ((" host-01 ", "", "case-42"), ["registry", "host-01", "case-42"]),
+    ],
+)
+def test_registry_tags_normalize_and_deduplicate(tags, expected) -> None:
+    document = plugin_result_to_document(
+        PluginResult(), "example", "SYSTEM", "/host/SYSTEM", tags
+    )
+    assert document["tags"] == expected
+
+
+def test_datetime_normalization_uses_z_for_utc_and_preserves_other_offsets() -> None:
+    utc = datetime(2015, 10, 30, 7, 24, 57, 814133, tzinfo=timezone.utc)
+    assert _normalize_value(utc) == "2015-10-30T07:24:57.814133Z"
+    assert _timestamp_to_iso(utc) == "2015-10-30T07:24:57.814133Z"
+    assert _timestamp_to_iso(utc.timestamp()) == "2015-10-30T07:24:57.814133Z"
+    naive = datetime(2015, 10, 30, 7, 24, 57, 814133)
+    assert _normalize_value(naive) == "2015-10-30T07:24:57.814133"
+    assert _timestamp_to_iso(naive) is None
+    plus_nine = datetime(2026, 10, 2, 13, tzinfo=timezone(timedelta(hours=9)))
+    assert _normalize_value(plus_nine) == "2026-10-02T13:00:00+09:00"
+    assert _timestamp_to_iso(plus_nine) == "2026-10-02T04:00:00Z"
+    result = PluginResult()
+    result.set_event_time(plus_nine, source="test", meaning="test")
+    document = plugin_result_to_document(result, "example", "SYSTEM", "-")
+    assert document["@timestamp"] == "2026-10-02T04:00:00Z"
+    assert document["reg2es"]["timestamp"]["raw"] == "2026-10-02T13:00:00+09:00"
+    assert result.event_time == plus_nine
+
+
+@pytest.mark.parametrize(
+    ("original", "expected"),
+    [
+        (
+            datetime(2026, 10, 2, 0, 30, 0, 814133, tzinfo=timezone(timedelta(hours=9))),
+            "2026-10-01T15:30:00.814133Z",
+        ),
+        (
+            datetime(2026, 10, 2, 23, 30, 0, 814133, tzinfo=timezone(timedelta(hours=-5))),
+            "2026-10-03T04:30:00.814133Z",
+        ),
+    ],
+)
+def test_event_timestamp_is_utc_while_original_offset_and_precision_are_preserved(
+    original, expected
+) -> None:
+    result = PluginResult()
+    result.mtime = 100.25
+    result.custom = {"original_event_time": original}
+    result.set_event_time(
+        original, source="artifact", meaning="execution", precision="microseconds"
+    )
+    document = plugin_result_to_document(result, "example", "SYSTEM", "-")
+    assert document["@timestamp"] == expected
+    assert document["reg2es"]["timestamp"] == {
+        "source": "artifact",
+        "meaning": "execution",
+        "precision": "microseconds",
+        "fallback_reason": None,
+        "raw": original.isoformat(),
+    }
+    assert document["reg2es"]["custom"]["original_event_time"] == original.isoformat()
+    assert document["reg2es"]["timestamps"]["modified"] == 100.25
+    assert document["reg2es"]["timestamp_iso"]["modified"] == (
+        "1970-01-01T00:01:40.250000Z"
+    )
+    assert result.event_time == original
 
 
 def test_recentdocs_promotes_decoded_name_to_ecs_file_field() -> None:
@@ -486,7 +568,7 @@ def test_artifact_timestamp_precedes_last_write_and_preserves_both() -> None:
 
     document = plugin_result_to_document(result, "example", "SYSTEM", "/host/SYSTEM")
 
-    assert document["@timestamp"] == "2020-01-02T03:04:05.123456+00:00"
+    assert document["@timestamp"] == "2020-01-02T03:04:05.123456Z"
     assert document["reg2es"]["timestamp"] == {
         "source": "ShutdownTime",
         "meaning": "shutdown",
@@ -495,12 +577,13 @@ def test_artifact_timestamp_precedes_last_write_and_preserves_both() -> None:
         "raw": "132223214451234560",
     }
     assert document["reg2es"]["timestamps"]["modified"] == result.mtime
-    assert document["reg2es"]["timestamp_iso"]["modified"].endswith("+00:00")
+    assert document["reg2es"]["timestamp_iso"]["modified"].endswith("Z")
 
 
 def test_invalid_artifact_time_falls_back_with_reason() -> None:
     key = RegistryKeyMock.build("Control\\Test")
     result = PluginResult(key=key)
+    result.mtime = 145.25
     result.set_event_time(
         datetime(2020, 1, 2, 3, 4, 5),
         source="TypedURLsTime",
@@ -513,8 +596,10 @@ def test_invalid_artifact_time_falls_back_with_reason() -> None:
         result, "typedurls", "NTUSER.DAT", "/host/NTUSER.DAT"
     )
 
-    assert document["@timestamp"]
+    assert document["@timestamp"] == "1970-01-01T00:02:25.250000Z"
     assert document["reg2es"]["timestamp"]["source"] == "key.last_write"
+    assert document["reg2es"]["timestamp"]["meaning"] == "registry_key_modified"
+    assert document["reg2es"]["timestamp"]["precision"] == "subsecond"
     assert (
         document["reg2es"]["timestamp"]["fallback_reason"] == "invalid_typedurls_time"
     )
@@ -526,7 +611,7 @@ def test_invalid_artifact_time_is_rejected_without_plugin_hint(value) -> None:
     result.mtime = 100
     result.set_event_time(value, source="test", meaning="test")
     document = plugin_result_to_document(result, "example", "SYSTEM", "-")
-    assert document["@timestamp"] == "1970-01-01T00:01:40+00:00"
+    assert document["@timestamp"] == "1970-01-01T00:01:40Z"
     assert document["reg2es"]["timestamp"]["fallback_reason"] == "invalid_event_time"
 
 

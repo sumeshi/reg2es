@@ -43,7 +43,7 @@ def test_userassist_filetime_submicrosecond_uses_shared_integer_conversion(
         UserAssistPlugin(registry, logging.getLogger(__name__), "NTUSER.DAT", "-").run()
     )
     doc = document(results[0], "userassist", "NTUSER.DAT")
-    assert doc["@timestamp"] == "2024-01-01T00:00:00.123456+00:00"
+    assert doc["@timestamp"] == "2024-01-01T00:00:00.123456Z"
     assert doc["reg2es"]["timestamp"]["raw"] == str(FILETIME + 7)
 
 
@@ -76,7 +76,7 @@ def test_typedurls_uses_sibling_key_case_insensitive_value_matching():
     )
     assert len(results) == 1
     doc = document(results[0], "typedurls", "NTUSER.DAT")
-    assert doc["@timestamp"] == "2024-01-01T00:00:00.123456+00:00"
+    assert doc["@timestamp"] == "2024-01-01T00:00:00.123456Z"
     assert doc["reg2es"]["value_data"] == "https://example.org"
     orjson.dumps(doc)
 
@@ -108,7 +108,7 @@ def test_sam_rid_is_value_type_and_expiry_sentinel_does_not_drop_user():
     results = sam_results(sam_f_data())
     assert len(results) == 1
     doc = document(results[0], "localusers", "SAM")
-    assert doc["@timestamp"] == "2024-01-01T00:00:00.123456+00:00"
+    assert doc["@timestamp"] == "2024-01-01T00:00:00.123456Z"
     orjson.dumps(doc)
 
 
@@ -201,7 +201,7 @@ def test_office_uses_enabled_time_not_document_creation_time():
     )
     assert len(results) == 1
     doc = document(results[0], "office_macros", "NTUSER.DAT")
-    assert doc["@timestamp"] == "2024-04-23T22:03:00+00:00"
+    assert doc["@timestamp"] == "2024-04-23T22:03:00Z"
     assert doc["reg2es"]["value_data"] == raw.hex()
 
 
@@ -239,7 +239,7 @@ def test_tasks_selects_one_representative_time_and_keeps_others_in_custom():
     )
     assert len(results) == 1
     doc = document(results[0], "tasks", "SOFTWARE")
-    assert doc["@timestamp"] == "2024-01-01T00:00:00.123456+00:00"
+    assert doc["@timestamp"] == "2024-01-01T00:00:00.123456Z"
     assert doc["reg2es"]["timestamp"]["source"] == "TaskCache.DynamicInfo.last_start"
     # The non-representative candidate stays in custom, not in a second document.
     assert (
@@ -281,7 +281,7 @@ def test_naive_registry_lastwrite_is_utc_regardless_of_host_timezone(monkeypatch
             monkeypatch.setenv("TZ", zone)
             time.tzset()
             doc = document(PluginResult(key=key), "regtime", "SYSTEM")
-            assert doc["@timestamp"] == "2024-01-01T00:00:00.123456+00:00"
+            assert doc["@timestamp"] == "2024-01-01T00:00:00.123456Z"
     finally:
         if original is None:
             monkeypatch.delenv("TZ", raising=False)
@@ -377,7 +377,7 @@ def test_systeminfo_mixes_time_bearing_and_plain_rows():
     assert hostname_doc["@timestamp"] != shutdown_doc["@timestamp"]
     assert hostname_doc["reg2es"]["timestamp"]["source"] == "key.last_write"
     assert shutdown_doc["reg2es"]["timestamp"]["source"] == "ShutdownTime"
-    assert shutdown_doc["@timestamp"] == "2024-01-01T00:00:00.123456+00:00"
+    assert shutdown_doc["@timestamp"] == "2024-01-01T00:00:00.123456Z"
     orjson.dumps(by_value)
 
 
@@ -401,7 +401,7 @@ def test_document_count_and_custom_fields_preserved_with_artifact_time():
     )
     assert len(results) == 3
     docs = [document(result, "kb", "SOFTWARE") for result in results]
-    assert all(doc["@timestamp"] == "2024-01-01T00:00:00.123456+00:00" for doc in docs)
+    assert all(doc["@timestamp"] == "2024-01-01T00:00:00.123456Z" for doc in docs)
     assert sorted(doc["reg2es"]["custom"]["kb"] for doc in docs) == [
         "KB0",
         "KB1",

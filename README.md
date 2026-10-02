@@ -8,13 +8,9 @@
 A command-line tool and Python library for extracting forensic artifacts from
 Windows NT Registry (REGF) hives and importing them into Elasticsearch.
 
-The original plugin set is based on
-[airbus-cert/regrippy](https://github.com/airbus-cert/regrippy); the package
-also includes reg2es-specific additions. The project also draws inspiration
-from [RegRipper](https://github.com/keydet89/RegRipper3.0). `reg2es` runs
-standalone and does not require the `regrippy` package at runtime. Both
-`reg2es` and `reg2json` use the same plugin runner and emit the same
-ECS-oriented documents.
+Includes Registry artifact plugins based on
+[regrippy](https://github.com/airbus-cert/regrippy) and inspired by
+[RegRipper](https://github.com/keydet89/RegRipper3.0).
 
 
 ## Usage
@@ -71,14 +67,14 @@ unrelated files are not treated as standalone hives.
   opt-in.
 - `--list-plugins`: print the 41 bundled plugins and exit.
 - `--size N`: set the generation and indexing chunk size (default: 500).
-- `--tags tag1,tag2`: add tags to every document.
+- `--tags tag1,tag2`: add custom tags to every document.
 - `--quiet`: suppress progress output.
 
 `reg2es` also accepts Elasticsearch connection options including
 `--host`, `--port`, `--index`, `--scheme`, `--pipeline`, `--login`, `--pwd`,
 `--ca-certs`, and `--no-verify-certs`. TLS verification is enabled by default;
 use `--ca-certs /path/to/ca.pem` for a private CA bundle. Run `reg2es --help`
-or `reg2json --help` for the full current interface.
+or `reg2json --help` for all options.
 
 
 ### Examples
@@ -118,9 +114,8 @@ reg2es SYSTEM --login elastic --pwd '******'
 reg2json NTUSER.DAT --plugin userassist -o artifacts.json
 ```
 
-`reg2json` also supports line-delimited output. `--format jsonl` (or `ndjson`)
-writes one record per line without holding the entire dataset in memory. When
-no output path is specified, the default extension is `.jsonl`:
+Use `--format jsonl` (or `ndjson`) to write one record per line.
+The default output extension is `.jsonl`:
 
 ```bash
 reg2json NTUSER.DAT --plugin userassist --format jsonl -o artifacts.jsonl
@@ -156,26 +151,13 @@ result: list[dict] = reg2json(
 
 ## Output Format Example
 
-Each plugin result becomes one document. Standard `event`,
-`registry`, `log.file`, `tags`, and `@timestamp` fields describe the artifact.
-Lossless plugin-specific data and the original offline-hive location are kept
-under `reg2es`.
-
-When a plugin has a reliable artifact time, it uses that time for `@timestamp`.
-Otherwise it uses the registry key's LastWrite; if no valid time exists,
-`@timestamp` is omitted. Check `reg2es.timestamp.source` and
-`reg2es.timestamp.meaning` before treating a result as an activity time.
-Original values and fallback reasons remain in the document.
-
-The current ECS output changes `registry.data.bytes` from a byte count to
-Base64, uses `REG_*` names in `registry.data.type`, and includes the value
-name in `registry.path`. Existing Elasticsearch mappings may conflict with
-these fields; use a new index for the updated output.
-
 ```json
 {
-  "@timestamp": "2015-10-30T07:24:57.814133+00:00",
+  "@timestamp": "2015-10-30T07:24:57.814133Z",
   "event": {
+    "provider": "registry",
+    "module": "windows",
+    "dataset": "windows.registry",
     "kind": "event",
     "category": ["registry"],
     "type": ["info"],
@@ -185,8 +167,8 @@ these fields; use a new index for the updated output.
     "hive": "HKLM",
     "key": "SYSTEM\\ControlSet001\\Control\\ComputerName\\ComputerName",
     "path": "HKLM\\SYSTEM\\ControlSet001\\Control\\ComputerName\\ComputerName\\ComputerName",
-      "value": "ComputerName",
-      "data": {
+    "value": "ComputerName",
+    "data": {
       "type": "REG_SZ",
       "strings": ["DESKTOP-EXAMPLE"]
     }
@@ -224,7 +206,7 @@ $ uv add reg2es
 
 ### From GitHub Releases
 
-Standalone binaries built with Nuitka are available from GitHub Releases for systems without a Python environment.
+Standalone binaries are available from GitHub Releases for systems without a Python environment.
 
 ```bash
 $ chmod +x ./reg2es

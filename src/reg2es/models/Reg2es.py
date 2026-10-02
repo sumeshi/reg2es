@@ -373,7 +373,7 @@ def _normalize_value(value: Any) -> Any:
     if isinstance(value, (bytes, bytearray, memoryview)):
         return bytes(value).hex()
     if isinstance(value, datetime):
-        return value.isoformat()
+        return _datetime_to_iso(value)
     if isinstance(value, Path):
         return str(value)
     if isinstance(value, Enum):
@@ -409,8 +409,25 @@ def _normalize_value(value: Any) -> Any:
     )
 
 
+def _datetime_to_iso(value: datetime) -> str:
+    """Format a datetime consistently, using ``Z`` for UTC values."""
+    serialized = value.isoformat()
+    if value.tzinfo is not None and value.utcoffset() == timezone.utc.utcoffset(value):
+        if serialized.endswith("+00:00"):
+            return serialized[:-6] + "Z"
+    return serialized
+
+
+def _normalize_tags(tags: Optional[Union[str, Sequence[str]]]) -> List[str]:
+    """Normalize comma-delimited strings or tag sequences to clean strings."""
+    if tags is None:
+        return []
+    values = tags.split(",") if isinstance(tags, str) else tags
+    return [tag.strip() for tag in values if isinstance(tag, str) and tag.strip()]
+
+
 def _timestamp_to_iso(value: Any) -> Optional[str]:
-    """Convert an aware datetime or positive Unix timestamp to UTC ISO 8601."""
+    """Convert a valid timestamp to UTC ISO 8601 without changing its raw value."""
     if isinstance(value, datetime):
         if value.tzinfo is None or value.utcoffset() is None:
             return None
@@ -418,7 +435,7 @@ def _timestamp_to_iso(value: Any) -> Optional[str]:
             normalized = value.astimezone(timezone.utc)
             if normalized.timestamp() <= 0:
                 return None
-            return normalized.isoformat()
+            return _datetime_to_iso(normalized)
         except (OSError, OverflowError, ValueError):
             return None
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -426,7 +443,7 @@ def _timestamp_to_iso(value: Any) -> Optional[str]:
     try:
         if not math.isfinite(value) or value <= 0:
             return None
-        return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
+        return _datetime_to_iso(datetime.fromtimestamp(value, tz=timezone.utc))
     except (OSError, OverflowError, ValueError):
         return None
 
@@ -509,7 +526,7 @@ def plugin_result_to_document(
     plugin_name: str,
     hive_name: str,
     hive_path: str,
-    additional_tags: Optional[Sequence[str]] = None,
+    additional_tags: Optional[Union[str, Sequence[str]]] = None,
     recovery: Optional[dict] = None,
 ) -> dict:
     """Convert a single PluginResult to an ECS-compliant document.
@@ -570,6 +587,9 @@ def plugin_result_to_document(
         registry_path = _join_registry_path(registry_path, result.value_name)
     doc: dict = {
         "event": {
+            "provider": "registry",
+            "module": "windows",
+            "dataset": "windows.registry",
             "kind": "event",
             "category": ["registry"],
             "type": ["info"],
@@ -585,11 +605,7 @@ def plugin_result_to_document(
                 "path": (str(Path(hive_path).resolve()) if hive_path != "-" else "-"),
             },
         },
-        "tags": list(
-            dict.fromkeys(
-                ["registry", *(additional_tags or [])],
-            )
-        ),
+        "tags": list(dict.fromkeys(["registry", *_normalize_tags(additional_tags)])),
         "reg2es": {
             "plugin": {"name": plugin_name},
             "source": {"hive": hive_name, "key_path": result.path},
@@ -772,7 +788,7 @@ class Reg2es:
         plugin_names: Optional[Sequence[str]] = None,
         chunk_size: int = 500,
         error_policy: str = "continue",
-        additional_tags: Optional[Sequence[str]] = None,
+        additional_tags: Optional[Union[str, Sequence[str]]] = None,
     ) -> None:
         if error_policy not in ("continue", "raise"):
             raise ValueError(
@@ -786,9 +802,7 @@ class Reg2es:
             self.input_paths = [Path(path) for path in input_paths]
         self.chunk_size = chunk_size
         self.error_policy = error_policy
-        self.additional_tags = [
-            tag.strip() for tag in (additional_tags or []) if tag and tag.strip()
-        ]
+        self.additional_tags = _normalize_tags(additional_tags)
 
         # Discover and validate plugins once.
         all_plugins = discover_plugins()
