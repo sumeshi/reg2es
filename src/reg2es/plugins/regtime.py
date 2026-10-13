@@ -19,7 +19,6 @@ class Plugin(BasePlugin):
     def dump(self, key):
         try:
             res = PluginResult(key=key)
-            res.path = self.cleanup_path(res.path)
         except (UnicodeDecodeError, ValueError) as exc:
             # Some hives (notably UsrClass.DAT) contain key names that are not
             # valid UTF-16-LE.  python-registry raises while decoding the name,
@@ -37,9 +36,3 @@ class Plugin(BasePlugin):
 
         for subkey in subkeys:
             yield from self.dump(subkey)
-
-    def cleanup_path(self, s):
-        parts = s.split("\\")[1:]
-        hive_path = self.reg.hive_name()
-        hive_name = hive_path.split("\\")[-1]
-        return hive_name + "\\" + "\\".join(parts)

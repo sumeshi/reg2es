@@ -1,10 +1,11 @@
 # coding: utf-8
 from pathlib import Path
 from typing import List, Optional
+import sys
 
 from reg2es.views.BaseView import BaseView
 from reg2es.presenters.Reg2jsonPresenter import Reg2jsonPresenter
-from reg2es.models.Reg2es import is_transaction_log, looks_like_registry_hive
+from reg2es.models.Reg2es import PartialExtractionError, collect_registry_hives
 
 
 class Reg2jsonView(BaseView):
@@ -44,53 +45,20 @@ class Reg2jsonView(BaseView):
             help="Write one JSON or JSONL file per plugin that produced results.",
         )
 
-    def __collect_input_files(self, reg_files: List[str]) -> List[Path]:
-        """Collect all input paths, expanding directories."""
-        paths: List[Path] = []
-        for reg_file in reg_files:
-            p = Path(reg_file)
-            if p.is_dir():
-                paths.extend(
-                    f
-                    for f in p.rglob("*")
-                    if (
-                        f.is_file()
-                        and not is_transaction_log(f)
-                        and looks_like_registry_hive(f)
-                    )
-                )
-            elif p.is_file():
-                if is_transaction_log(p):
-                    self.log(
-                        f"Warning: {reg_file} is a registry transaction log; "
-                        "it will be applied automatically with its primary hive "
-                        "and will not be processed separately.",
-                        self.args.quiet,
-                    )
-                elif not looks_like_registry_hive(p):
-                    self.log(
-                        f"Warning: {reg_file} is not a registry hive; skipping.",
-                        self.args.quiet,
-                    )
-                else:
-                    paths.append(p)
-            else:
-                self.log(
-                    f"Warning: {reg_file} does not exist; skipping.",
-                    self.args.quiet,
-                )
-        return paths
-
     def run(self):
         if self.list_plugins():
             return
         if not self.args.reg_files:
             self.parser.error("At least one registry hive or directory is required.")
 
-        input_files = self.__collect_input_files(self.args.reg_files)
+        input_files, input_errors, notices, protected_inputs = collect_registry_hives(
+            self.args.reg_files
+        )
+        self.report_input_issues([], notices)
 
         if not input_files:
-            self.parser.error("No readable registry hives found.")
+            self.report_input_issues(input_errors)
+            self.parser.exit(1, "No readable registry hives found.\n")
 
         self.log(f"Converting {len(input_files)} hive(s)...", self.args.quiet)
 
@@ -105,7 +73,7 @@ class Reg2jsonView(BaseView):
                 self.args.format,
             )
 
-        Reg2jsonPresenter(
+        presenter = Reg2jsonPresenter(
             input_paths=[str(p) for p in input_files],
             output_path=str(output_file),
             is_quiet=self.args.quiet,
@@ -114,7 +82,22 @@ class Reg2jsonView(BaseView):
             additional_tags=self.parse_tags(),
             split=self.args.split,
             output_format=self.args.format,
-        ).export_json()
+            protected_input_paths=protected_inputs,
+            input_diagnostics=input_errors,
+        )
+        presenter.export_json()
+        self.report_extraction_errors(presenter.errors)
+        if input_errors or presenter.failed_records:
+            extraction_failures = max(
+                0, presenter.failed_records - len(input_errors)
+            )
+            self.parser.exit(
+                1,
+                f"Partial extraction: {presenter.successful_records} "
+                "records written; "
+                f"{len(input_errors)} input failures; "
+                f"{extraction_failures} extraction failures.\n",
+            )
 
         self.log("Conversion completed successfully.", self.args.quiet)
 
@@ -138,7 +121,17 @@ class Reg2jsonView(BaseView):
 
 
 def entry_point():
-    Reg2jsonView().run()
+    try:
+        Reg2jsonView().run()
+    except Exception as exc:
+        if isinstance(exc, PartialExtractionError):
+            for diagnostic in exc.diagnostics:
+                print(
+                    f"Error: {diagnostic['source_file']}: {diagnostic['error']}",
+                    file=sys.stderr,
+                )
+        print(f"reg2json: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":

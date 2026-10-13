@@ -18,23 +18,39 @@ class Plugin(BasePlugin):
             return
 
         for service in key.subkeys():
-            values = [x.name() for x in service.values()]
-
-            res = PluginResult(key=service, value=None)
-            res.custom = {
-                "image_path": service.value("ImagePath").value()
-                if "ImagePath" in values
-                else "N/A",
-                "start_mode": ServiceStartMode(
-                    service.value("Start").value() if "Start" in values else -1
-                ),
-                "description": service.value("Description").value()
-                if "Description" in values
-                else "N/A",
-                "account": service.value("ObjectName").value()
-                if "ObjectName" in values
-                else "LocalSystem",
-            }
+            key_path, value_name = "<unreadable>", None
+            try:
+                key_path = service.path()
+                values = [x.name() for x in service.values()]
+                res = PluginResult(key=service, value=None)
+                for name, field, default in (
+                    ("ImagePath", "image_path", "N/A"),
+                    ("Start", "start_mode", -1),
+                    ("Description", "description", "N/A"),
+                    ("ObjectName", "account", "LocalSystem"),
+                ):
+                    value_name = name
+                    raw = default
+                    if name in values:
+                        raw = service.value(name).value()
+                    if name == "Start":
+                        try:
+                            value = ServiceStartMode(raw)
+                        except ValueError:
+                            value = ServiceStartMode.UNKNOWN
+                            res.custom["start_mode_raw"] = raw
+                            self.warning(
+                                f"plugin=services hive={self.hive_name} "
+                                f"path={self.hive_path} key={key_path} "
+                                "value=Start "
+                                f"unknown start mode: {raw!r}"
+                            )
+                    else:
+                        value = raw
+                    res.custom[field] = value
+            except Exception as exc:
+                self.record_error(key_path, value_name, exc)
+                continue
             yield res
 
 class ServiceStartMode(Enum):

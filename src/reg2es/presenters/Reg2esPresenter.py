@@ -4,7 +4,7 @@ from typing import Callable, Generator, List, Optional, Sequence
 
 from tqdm import tqdm
 
-from reg2es.models.Reg2es import Reg2es
+from reg2es.models.Reg2es import Reg2es, validate_chunk_size
 from reg2es.models.ElasticsearchUtils import ElasticsearchUtils
 
 
@@ -27,6 +27,7 @@ class Reg2esPresenter:
         ca_certs: str | None = None,
         logger: Optional[Callable[[str, bool], None]] = None,
     ):
+        validate_chunk_size(chunk_size)
         self.input_paths = (
             [input_paths] if isinstance(input_paths, Path) else list(input_paths)
         )
@@ -46,6 +47,9 @@ class Reg2esPresenter:
         self.verify_certs = verify_certs
         self.ca_certs = ca_certs
         self.logger = logger
+        self.successful_records = 0
+        self.failed_records = 0
+        self.errors = []
 
     def reg2es(self) -> Generator[List[dict], None, None]:
         """Yield chunks of documents from all inputs / plugins.
@@ -62,6 +66,9 @@ class Reg2esPresenter:
             gen = r.gen_records()
             yield from gen if self.is_quiet else tqdm(gen)
         finally:
+            self.successful_records = getattr(r, "successful_records", 0)
+            self.failed_records = getattr(r, "failed_records", 0)
+            self.errors = getattr(r, "errors", [])
             r.close()
 
     def bulk_import(self) -> tuple[int, list]:
@@ -106,7 +113,7 @@ class Reg2esPresenter:
                     close()
             finally:
                 es.close()
-        if self.logger:
+        if self.logger and not self.failed_records:
             self.logger(
                 f"Bulk import completed: {batch_count} batches processed",
                 self.is_quiet,

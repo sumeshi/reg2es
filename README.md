@@ -128,6 +128,10 @@ output directory:
 reg2json collected-hives/ --split -o artifacts/
 ```
 
+Input and extraction errors are reported to stderr while remaining inputs are
+processed. Partial extraction exits 1, even with `--quiet`; output and
+Elasticsearch errors stop processing.
+
 The exhaustive `regtime` timeline is excluded from the default plugin set
 because it emits one record for every registry key. Run it explicitly when
 needed:
@@ -147,6 +151,9 @@ result: list[dict] = reg2json(
     additional_tags=["host-01"],
 )
 ```
+
+Python APIs raise `PartialExtractionError` on recovered partial results;
+JSON APIs expose completed records in the exception's `records` attribute.
 
 
 ## Output Format Example

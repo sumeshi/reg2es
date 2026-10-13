@@ -90,6 +90,24 @@ class BasePlugin(object):
         self.logger = logger
         self.hive_name = hive_name
         self.hive_path = hive_path
+        self.error_policy = "continue"
+        self.errors = []
+        self.plugin_name = type(self).__module__.rsplit(".", 1)[-1]
+
+    def record_error(self, key, value, error):
+        """Report a failed entry to the runner and honor its strict policy."""
+        diagnostic = {
+            "plugin": self.plugin_name,
+            "hive": self.hive_name,
+            "hive_path": self.hive_path,
+            "key": key,
+            "value": value,
+            "error": f"{type(error).__name__}: {error}",
+        }
+        self.errors.append(diagnostic)
+        self.warning("Record extraction failed: " + repr(diagnostic))
+        if self.error_policy == "raise":
+            raise error
 
     def run(self):
         """Main entry point of the plugin"""

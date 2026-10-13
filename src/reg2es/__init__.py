@@ -3,7 +3,7 @@ from itertools import chain
 from pathlib import Path
 from typing import List, Optional, Sequence
 
-from reg2es.models.Reg2es import Reg2es
+from reg2es.models.Reg2es import PartialExtractionError, Reg2es, validate_chunk_size
 
 PathInput = str | Path | Sequence[str | Path]
 
@@ -49,11 +49,12 @@ def reg2es(
         additional_tags: Extra tags for each record.
         verify_certs: Whether to verify TLS certificates.
     """
+    validate_chunk_size(chunk_size)
     from reg2es.presenters.Reg2esPresenter import Reg2esPresenter
 
     paths = _normalize_paths(input_paths)
 
-    Reg2esPresenter(
+    presenter = Reg2esPresenter(
         input_paths=paths,
         host=host,
         port=int(port),
@@ -67,7 +68,12 @@ def reg2es(
         plugin_names=plugin_names,
         additional_tags=additional_tags,
         verify_certs=verify_certs,
-    ).bulk_import()
+    )
+    presenter.bulk_import()
+    if presenter.failed_records:
+        raise PartialExtractionError(
+            presenter.errors,
+        )
 
 
 def reg2json(
@@ -87,6 +93,7 @@ def reg2json(
     Returns:
         List of registry records in ECS format.
     """
+    validate_chunk_size(chunk_size)
     paths = _normalize_paths(input_paths)
 
     r = Reg2es(
@@ -99,5 +106,8 @@ def reg2json(
         records: List[dict] = list(chain.from_iterable(r.gen_records()))
     finally:
         r.close()
+
+    if r.failed_records:
+        raise PartialExtractionError(r.errors, records=records)
 
     return records

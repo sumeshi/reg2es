@@ -1,10 +1,10 @@
 # coding: utf-8
-from pathlib import Path
 from typing import List, Optional
+import sys
 
 from reg2es.views.BaseView import BaseView
 from reg2es.presenters.Reg2esPresenter import Reg2esPresenter
-from reg2es.models.Reg2es import is_transaction_log, looks_like_registry_hive
+from reg2es.models.Reg2es import collect_registry_hives
 
 
 class Reg2esView(BaseView):
@@ -56,53 +56,19 @@ class Reg2esView(BaseView):
             help="Disable TLS certificate verification.",
         )
 
-    def __collect_input_files(self, reg_files: List[str]) -> List[Path]:
-        """Collect all input paths, expanding directories."""
-        paths: List[Path] = []
-        for reg_file in reg_files:
-            p = Path(reg_file)
-            if p.is_dir():
-                paths.extend(
-                    f
-                    for f in p.rglob("*")
-                    if (
-                        f.is_file()
-                        and not is_transaction_log(f)
-                        and looks_like_registry_hive(f)
-                    )
-                )
-            elif p.is_file():
-                if is_transaction_log(p):
-                    self.log(
-                        f"Warning: {reg_file} is a registry transaction log; "
-                        "it will be applied automatically with its primary hive "
-                        "and will not be processed separately.",
-                        self.args.quiet,
-                    )
-                elif not looks_like_registry_hive(p):
-                    self.log(
-                        f"Warning: {reg_file} is not a registry hive; skipping.",
-                        self.args.quiet,
-                    )
-                else:
-                    paths.append(p)
-            else:
-                self.log(
-                    f"Warning: {reg_file} does not exist; skipping.",
-                    self.args.quiet,
-                )
-        return paths
-
     def run(self):
         if self.list_plugins():
             return
         if not self.args.reg_files:
             self.parser.error("At least one registry hive or directory is required.")
 
-        input_files = self.__collect_input_files(self.args.reg_files)
+        input_files, input_errors, notices, _protected_inputs = collect_registry_hives(
+            self.args.reg_files
+        )
+        self.report_input_issues(input_errors, notices)
 
         if not input_files:
-            self.parser.error("No readable registry hives found.")
+            self.parser.exit(1, "No readable registry hives found.\n")
 
         self.log(
             f"Processing {len(input_files)} hive(s) as a single dataset.",
@@ -112,7 +78,7 @@ class Reg2esView(BaseView):
         verify_certs = not getattr(self.args, "no_verify_certs", False)
         plugins: Optional[List[str]] = getattr(self.args, "plugins", None)
 
-        Reg2esPresenter(
+        presenter = Reg2esPresenter(
             input_paths=input_files,
             host=self.args.host,
             ca_certs=self.args.ca_certs,
@@ -128,13 +94,26 @@ class Reg2esView(BaseView):
             additional_tags=self.parse_tags(),
             verify_certs=verify_certs,
             logger=self.log,
-        ).bulk_import()
+        )
+        total_success, _ = presenter.bulk_import()
+        self.report_extraction_errors(presenter.errors)
+        if input_errors or presenter.failed_records:
+            self.parser.exit(
+                1,
+                f"Partial extraction: {total_success} records indexed; "
+                f"{len(input_errors)} input failures; "
+                f"{presenter.failed_records} extraction failures.\n",
+            )
 
         self.log("Import completed successfully.", self.args.quiet)
 
 
 def entry_point():
-    Reg2esView().run()
+    try:
+        Reg2esView().run()
+    except Exception as exc:
+        print(f"reg2es: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":

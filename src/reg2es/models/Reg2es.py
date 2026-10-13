@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import importlib
 import logging
+import os
 import pkgutil
 import re
 import shutil
+import stat
 import tempfile
 import math
 import base64
@@ -42,6 +44,12 @@ from Registry import Registry, RegistryLog, RegistryParse
 from reg2es.plugins import BasePlugin, PluginResult
 
 logger = logging.getLogger(__name__)
+
+
+def validate_chunk_size(chunk_size: int) -> None:
+    if type(chunk_size) is not int or chunk_size <= 0:
+        raise ValueError("chunk_size must be greater than zero")
+
 
 # ---------------------------------------------------------------------------
 # Hive type mapping
@@ -84,6 +92,25 @@ _TRANSACTION_LOG_SUFFIXES = (".LOG", ".LOG1", ".LOG2")
 class RegistryRecoveryError(RuntimeError):
     """Raised when a dirty registry hive cannot be safely recovered."""
 
+class PartialExtractionError(RuntimeError):
+    """Raised when extraction continues past one or more failures."""
+
+    def __init__(self, diagnostics: Sequence[dict], records=None):
+        self.diagnostics = [
+            {
+                **diagnostic,
+                "source_file": diagnostic.get(
+                    "source_file", diagnostic.get("hive_path", "")
+                ),
+            }
+            for diagnostic in diagnostics
+        ]
+        self.records = records
+        super().__init__(
+            f"Partial extraction: {len(self.diagnostics)} failure(s); "
+            "output is incomplete."
+        )
+
 
 def is_transaction_log(path: Path) -> bool:
     """Return whether *path* is a registry transaction log, ignoring case."""
@@ -93,7 +120,9 @@ def is_transaction_log(path: Path) -> bool:
 _REGF_MAGIC = b"regf"
 
 
-def looks_like_registry_hive(path: Path) -> bool:
+def looks_like_registry_hive(
+    path: Path, errors: Optional[List[dict]] = None
+) -> bool:
     """Return whether *path* starts with the REGF magic of a registry hive.
 
     Directory scans can pick up unrelated files (previous JSON exports, thumbs,
@@ -103,8 +132,122 @@ def looks_like_registry_hive(path: Path) -> bool:
     try:
         with path.open("rb") as handle:
             return handle.read(4) == _REGF_MAGIC
-    except OSError:
+    except OSError as exc:
+        if errors is not None:
+            errors.append(
+                {
+                    "source_file": str(path.resolve()),
+                    "error": f"Cannot read input: {exc}",
+                }
+            )
         return False
+
+
+def collect_registry_hives(
+    reg_files: Sequence[str | Path],
+) -> Tuple[List[Path], List[dict], List[str], List[Path]]:
+    """Expand CLI inputs, deduplicate hives, and snapshot protected files."""
+    paths: List[Path] = []
+    protected_paths: List[Path] = []
+    errors: List[dict] = []
+    notices: List[str] = []
+    seen = set()
+    protected_seen = set()
+
+    def protect(candidate: Path) -> None:
+        resolved = candidate.resolve()
+        if resolved not in protected_seen:
+            protected_seen.add(resolved)
+            protected_paths.append(resolved)
+
+    for value in reg_files:
+        path = Path(value)
+        input_errors_before = len(errors)
+        try:
+            if path.is_dir():
+                scanned = []
+
+                def on_walk_error(exc: OSError, directory=None) -> None:
+                    source = directory or getattr(exc, "filename", None) or path
+                    protect(path)
+                    errors.append(
+                        {
+                            "source_file": str(Path(source).resolve()),
+                            "error": f"Cannot inspect input: {exc}",
+                        }
+                    )
+
+                for root, _directories, filenames in os.walk(
+                    path, onerror=on_walk_error
+                ):
+                    for name in filenames:
+                        candidate = Path(root) / name
+                        try:
+                            if stat.S_ISREG(candidate.stat().st_mode):
+                                scanned.append(candidate)
+                        except OSError as exc:
+                            on_walk_error(exc, candidate.parent)
+                for item in scanned:
+                    protect(item)
+                found = []
+                for item in scanned:
+                    if is_transaction_log(item):
+                        continue
+                    if looks_like_registry_hive(item, errors):
+                        found.append(item)
+                if not found and len(errors) == input_errors_before:
+                    errors.append(
+                        {
+                            "source_file": str(path.resolve()),
+                            "error": "No registry hives found; skipping.",
+                        }
+                    )
+                candidates = found
+            elif path.is_file():
+                protect(path)
+                if is_transaction_log(path):
+                    notices.append(
+                        f"{path}: transaction log will be applied with its primary hive"
+                    )
+                    candidates = []
+                elif looks_like_registry_hive(path, errors):
+                    candidates = [path]
+                    try:
+                        for transaction_log in _find_transaction_logs(path):
+                            protect(transaction_log)
+                    except RegistryRecoveryError as exc:
+                        protect(path.parent)
+                        errors.append({
+                            "source_file": str(path.parent.resolve()),
+                            "error": str(exc),
+                        })
+                else:
+                    if len(errors) == input_errors_before:
+                        errors.append(
+                            {
+                                "source_file": str(path.resolve()),
+                                "error": "Not a registry hive; skipping.",
+                            }
+                        )
+                    candidates = []
+            else:
+                errors.append({
+                    "source_file": str(path.resolve()),
+                    "error": "Input does not exist; skipping.",
+                })
+                candidates = []
+        except OSError as exc:
+            errors.append({
+                "source_file": str(path.resolve()),
+                "error": f"Cannot inspect input: {exc}",
+            })
+            candidates = []
+        for candidate in candidates:
+            resolved = candidate.resolve()
+            if resolved not in seen:
+                seen.add(resolved)
+                paths.append(resolved)
+    return paths, errors, notices, protected_paths
 
 
 def _find_transaction_logs(primary_path: Path) -> List[Path]:
@@ -693,6 +836,8 @@ def plugin_result_to_document(
 
 def _build_hive_dataset(
     input_paths: Sequence[Path],
+    errors: Optional[List[dict]] = None,
+    error_policy: str = "continue",
 ) -> Dict[str, List[Tuple[Path, Registry.Registry]]]:
     """Group input paths by detected hive type.
 
@@ -709,28 +854,40 @@ def _build_hive_dataset(
             logger.warning(
                 "Skipping '%s': not a registry hive (missing REGF header)", path
             )
-    if not primary_paths:
+    if not primary_paths and not candidate_paths:
         raise RegistryRecoveryError("No primary registry hive was provided")
-    try:
-        for path in sorted(primary_paths, key=lambda item: str(item)):
+    for path in sorted(candidate_paths, key=lambda item: str(item)):
+        if path not in primary_paths:
+            error = RegistryRecoveryError(
+                f"Skipping '{path}': not a registry hive (missing REGF header)"
+            )
+            if errors is not None:
+                errors.append({"hive_path": str(path), "error": str(error)})
+            logger.warning("%s", error)
+            if error_policy == "raise":
+                raise error
+    for path in sorted(primary_paths, key=lambda item: str(item)):
+        parser_path = path
+        try:
             parser_path, recovery = _prepare_registry_hive(path)
-            try:
-                reg = Registry.Registry(str(parser_path))
-                setattr(reg, "_reg2es_recovery", recovery)
-                setattr(
-                    reg,
-                    "_reg2es_temporary_path",
-                    parser_path if parser_path != path else None,
-                )
-                hive_name = detect_hive_type(reg, path)
-                dataset.setdefault(hive_name, []).append((path, reg))
-            except Exception:
-                if parser_path != path:
-                    parser_path.unlink(missing_ok=True)
+            reg = Registry.Registry(str(parser_path))
+            setattr(reg, "_reg2es_recovery", recovery)
+            setattr(
+                reg,
+                "_reg2es_temporary_path",
+                parser_path if parser_path != path else None,
+            )
+            hive_name = detect_hive_type(reg, path)
+            dataset.setdefault(hive_name, []).append((path, reg))
+        except Exception as exc:
+            if parser_path != path:
+                parser_path.unlink(missing_ok=True)
+            if errors is not None:
+                errors.append({"hive_path": str(path), "error": f"{type(exc).__name__}: {exc}"})
+            logger.warning("Failed to read registry hive '%s': %s", path, exc)
+            if error_policy == "raise":
+                _close_parsers(dataset)
                 raise
-    except Exception:
-        _close_parsers(dataset)
-        raise
     return dataset
 
 
@@ -777,7 +934,8 @@ class Reg2es:
         plugin_names: Optional list of plugin module names to run.
             None means run compatible, default-enabled plugins.
         chunk_size: Number of documents per yielded chunk.
-        error_policy: ``"continue"`` (default) logs and skips plugin errors;
+        error_policy: ``"continue"`` (default) logs and skips service-entry,
+            conversion, or plugin errors;
             ``"raise"`` re-raises the first exception.
         additional_tags: Extra tags added to every generated document.
     """
@@ -790,12 +948,11 @@ class Reg2es:
         error_policy: str = "continue",
         additional_tags: Optional[Union[str, Sequence[str]]] = None,
     ) -> None:
+        validate_chunk_size(chunk_size)
         if error_policy not in ("continue", "raise"):
             raise ValueError(
                 "error_policy must be 'continue' or 'raise', " f"got {error_policy!r}"
             )
-        if chunk_size <= 0:
-            raise ValueError(f"chunk_size must be greater than zero, got {chunk_size}")
         if isinstance(input_paths, (str, Path)):
             self.input_paths = [Path(input_paths)]
         else:
@@ -803,10 +960,17 @@ class Reg2es:
         self.chunk_size = chunk_size
         self.error_policy = error_policy
         self.additional_tags = _normalize_tags(additional_tags)
+        self.errors: List[dict] = []
+        self.successful_records = 0
 
         # Discover and validate plugins once.
         all_plugins = discover_plugins()
         self.plugins = resolve_plugin_names(plugin_names, all_plugins)
+
+    @property
+    def failed_records(self) -> int:
+        """Count observed failures; unenumerated entries are unknown."""
+        return len(self.errors)
 
     # Context manager -------------------------------------------------
 
@@ -836,6 +1000,8 @@ class Reg2es:
     ) -> Generator[PluginResult, None, None]:
         """Instantiate and run a single plugin, yielding PluginResults."""
         instance = plugin_cls(reg, logger, hive_name, hive_path)
+        instance.error_policy = self.error_policy
+        instance.errors = self.errors
         yield from instance.run()
 
     def _iter_documents(self) -> Generator[dict, None, None]:
@@ -850,7 +1016,11 @@ class Reg2es:
         support enrichment patterns. Mutable class defaults are copied onto
         that instance so state cannot leak into another dataset.
         """
-        dataset = _build_hive_dataset(self.input_paths)
+        self.errors = []
+        self.successful_records = 0
+        dataset = _build_hive_dataset(
+            self.input_paths, self.errors, self.error_policy
+        )
         try:
             for plugin_name, plugin_cls in self.plugins:
                 # Determine hive processing order from __REGHIVE__.
@@ -892,6 +1062,9 @@ class Reg2es:
                     first_hive,
                     str(first_path),
                 )
+                instance.error_policy = self.error_policy
+                instance.errors = self.errors
+                instance.plugin_name = plugin_name
 
                 # Upstream localgroups and gpo keep mutable state on their
                 # classes.  Shadow every mutable default on the instance so
@@ -920,25 +1093,28 @@ class Reg2es:
 
                         try:
                             for result in instance.run():
-                                doc = plugin_result_to_document(
-                                    result,
-                                    plugin_name,
-                                    hive_name,
-                                    str(hive_path),
-                                    getattr(self, "additional_tags", None),
-                                    _get_registry_metadata(reg, "_reg2es_recovery"),
-                                )
+                                try:
+                                    doc = plugin_result_to_document(
+                                        result,
+                                        plugin_name,
+                                        hive_name,
+                                        str(hive_path),
+                                        getattr(self, "additional_tags", None),
+                                        _get_registry_metadata(
+                                            reg, "_reg2es_recovery"
+                                        ),
+                                    )
+                                except Exception as exc:
+                                    instance.record_error(
+                                        result.path, result.value_name, exc
+                                    )
+                                    continue
+                                self.successful_records += 1
                                 yield doc
                         except Exception as exc:
                             if self.error_policy == "raise":
                                 raise
-                            logger.warning(
-                                "Plugin '%s' failed on hive '%s' (%s): %s",
-                                plugin_name,
-                                hive_name,
-                                hive_path,
-                                exc,
-                            )
+                            instance.record_error(None, None, exc)
         finally:
             _close_parsers(dataset)
 

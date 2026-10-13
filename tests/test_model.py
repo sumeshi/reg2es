@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,7 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import orjson
 from Registry import Registry
-from Registry.Registry import RegBin
+from Registry.Registry import RegBin, RegDWord, RegSZ
 
 from reg2es.models.Reg2es import (
     Reg2es,
@@ -23,6 +24,7 @@ from reg2es.models.Reg2es import (
     _timestamp_to_iso,
     _prepare_registry_hive,
     detect_hive_type,
+    collect_registry_hives,
     discover_plugins,
     is_transaction_log,
     plugin_matches_hive,
@@ -30,7 +32,7 @@ from reg2es.models.Reg2es import (
     resolve_plugin_names,
 )
 from reg2es.plugins import BasePlugin, PluginResult
-from tests.regrippy.reg_mock import RegistryKeyMock, RegistryValueMock
+from tests.regrippy.reg_mock import RegistryKeyMock, RegistryMock, RegistryValueMock
 
 
 def _runner(plugin_name, plugin, *, chunk_size=100, error_policy="raise"):
@@ -290,6 +292,126 @@ def test_dataset_rejects_transaction_logs_without_primary(tmp_path) -> None:
 
     with pytest.raises(RegistryRecoveryError, match="No primary registry hive"):
         _build_hive_dataset([transaction_log])
+
+def test_dataset_continues_after_bad_hive_and_records_parse_failure(tmp_path, monkeypatch):
+    paths = [tmp_path / name for name in ("01-SYSTEM", "02-BAD", "03-SOFTWARE")]
+    for path in paths:
+        path.write_bytes(b"regf test")
+    monkeypatch.setattr(
+        "reg2es.models.Reg2es._prepare_registry_hive",
+        lambda path: (path, None),
+    )
+
+    def parse(path):
+        if Path(path).name == "02-BAD":
+            raise ValueError("corrupt hive")
+        return MagicMock()
+
+    monkeypatch.setattr("reg2es.models.Reg2es.Registry.Registry", parse)
+    monkeypatch.setattr(
+        "reg2es.models.Reg2es.detect_hive_type",
+        lambda _reg, path: "SYSTEM" if path.name == "01-SYSTEM" else "SOFTWARE",
+    )
+    errors = []
+    dataset = _build_hive_dataset(paths, errors, "continue")
+
+    assert [path.name for entries in dataset.values() for path, _reg in entries] == [
+        "01-SYSTEM", "03-SOFTWARE",
+    ]
+    assert errors == [{
+        "hive_path": str(paths[1]),
+        "error": "ValueError: corrupt hive",
+    }]
+    _close_parsers(dataset)
+
+    with pytest.raises(ValueError, match="corrupt hive"):
+        _build_hive_dataset(paths, [], "raise")
+
+def test_collect_registry_hives_resolves_deduplicates_and_reports_bad_inputs(tmp_path):
+    hive = tmp_path / "SYSTEM"
+    hive.write_bytes(b"regf test")
+    empty = tmp_path / "empty"
+    empty.write_bytes(b"")
+    missing = tmp_path / "missing"
+    empty_dir = tmp_path / "empty-dir"
+    empty_dir.mkdir()
+
+    paths, errors, notices, protected = collect_registry_hives(
+        [hive, hive.parent, empty, missing, empty_dir]
+    )
+
+    assert paths == [hive.resolve()]
+    assert any("not a registry hive" in error["error"].lower() for error in errors)
+    assert any("does not exist" in error["error"].lower() for error in errors)
+    assert any("no registry hives found" in error["error"].lower() for error in errors)
+    assert notices == []
+    assert protected == [hive.resolve(), empty.resolve()]
+
+def test_collect_explicit_hive_protects_recovery_logs(tmp_path):
+    hive = tmp_path / "SYSTEM"
+    log = tmp_path / "SYSTEM.LOG1"
+    hive.write_bytes(b"regf test")
+    log.write_bytes(b"transaction log")
+
+    paths, errors, notices, protected = collect_registry_hives([hive])
+
+    assert paths == [hive.resolve()]
+    assert errors == []
+    assert notices == []
+    assert protected == [hive.resolve(), log.resolve()]
+
+
+@pytest.mark.parametrize("directory_mode", [0, 0o400])
+def test_collect_registry_hives_reports_unreadable_descendants_and_files(
+    tmp_path, directory_mode
+):
+    hive = tmp_path / "SYSTEM"
+    hive.write_bytes(b"regf readable")
+    unreadable_file = tmp_path / "SOFTWARE"
+    unreadable_file.write_bytes(b"regf unreadable")
+    unreadable_file.chmod(0)
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    hidden_hive = locked / "SECURITY"
+    hidden_hive.write_bytes(b"regf hidden")
+    nested = locked / "deep"
+    nested.mkdir()
+    (nested / "SOFTWARE").write_bytes(b"regf hidden")
+    locked.chmod(directory_mode)
+
+    try:
+        if os.access(locked, os.X_OK):
+            pytest.skip("filesystem permissions are bypassed")
+
+        paths, errors, notices, protected = collect_registry_hives([tmp_path])
+
+        assert paths == [hive.resolve()]
+        assert notices == []
+        assert unreadable_file.resolve() in protected
+        assert tmp_path.resolve() in protected
+        assert any(
+            error["source_file"] == str(unreadable_file.resolve())
+            and "cannot read input" in error["error"].lower()
+            for error in errors
+        )
+        assert any(
+            error["source_file"] == str(locked.resolve())
+            and "cannot inspect input" in error["error"].lower()
+            for error in errors
+        )
+        assert not any(
+            "no registry hives found" in error["error"].lower()
+            for error in errors
+        )
+        from reg2es.presenters.Reg2jsonPresenter import Reg2jsonPresenter
+
+        presenter = Reg2jsonPresenter(
+            paths, protected_input_paths=protected, input_diagnostics=errors
+        )
+        presenter._check_output_path(tmp_path.parent / f"{tmp_path.name}.json")
+    finally:
+        unreadable_file.chmod(0o600)
+        locked.chmod(0o700)
 
 
 def test_recovery_metadata_is_added_to_documents() -> None:
@@ -645,6 +767,33 @@ def test_runner_validates_configuration() -> None:
     with pytest.raises(ValueError, match="chunk_size"):
         Reg2es([], chunk_size=0)
 
+def test_public_reg2json_raises_partial_error_with_successful_records(monkeypatch):
+    import reg2es
+
+    diagnostics = [{"hive_path": "bad.hive", "error": "ValueError: corrupt"}]
+
+    class Runner:
+        errors = diagnostics
+        failed_records = 1
+
+        def __init__(self, **kwargs):
+            pass
+
+        def gen_records(self):
+            yield [{"ok": 1}]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(reg2es, "Reg2es", Runner)
+    with pytest.raises(reg2es.PartialExtractionError) as error:
+        reg2es.reg2json("good.hive")
+    assert error.value.records == [{"ok": 1}]
+    assert error.value.diagnostics == [{
+        **diagnostics[0], "source_file": "bad.hive",
+    }]
+    assert str(error.value) == "Partial extraction: 1 failure(s); output is incomplete."
+
 
 def test_error_policy_continue_logs_and_raise_propagates(caplog) -> None:
     class FailingPlugin(BasePlugin):
@@ -661,7 +810,7 @@ def test_error_policy_continue_logs_and_raise_propagates(caplog) -> None:
     with (
         patch(
             "reg2es.models.Reg2es._build_hive_dataset",
-            side_effect=lambda _paths: dataset(),
+            side_effect=lambda _paths, *_args: dataset(),
         ),
         caplog.at_level(logging.WARNING),
     ):
@@ -672,11 +821,167 @@ def test_error_policy_continue_logs_and_raise_propagates(caplog) -> None:
     with (
         patch(
             "reg2es.models.Reg2es._build_hive_dataset",
-            side_effect=lambda _paths: dataset(),
+            side_effect=lambda _paths, *_args: dataset(),
         ),
         pytest.raises(RuntimeError, match="broken plugin"),
     ):
         list(raising.gen_records())
+
+
+def _services_with_bad_entry():
+    key = RegistryKeyMock.build("ControlSet002\\Services")
+    reg = RegistryMock("SYSTEM", "system", key.root())
+    reg.set_ccs(2)
+    for name in ("GoodBefore", "Bad", "GoodAfter"):
+        service = RegistryKeyMock(name, key)
+        key.add_child(service)
+        value = RegistryValueMock("Start", 2, RegDWord)
+        if name == "Bad":
+            value.value = MagicMock(side_effect=ValueError("corrupt Start"))
+        service.add_value(value)
+    return reg
+
+
+@pytest.mark.parametrize("policy", ["continue", "raise"])
+def test_services_runner_reports_entry_failures(policy, monkeypatch):
+    from reg2es.plugins.services import Plugin
+
+    reg = _services_with_bad_entry()
+    monkeypatch.setattr(
+        "reg2es.models.Reg2es._build_hive_dataset",
+        lambda _paths, *_args: {"SYSTEM": [(Path("/case/SYSTEM"), reg)]},
+    )
+    runner = _runner("services", Plugin, chunk_size=1, error_policy=policy)
+    records = runner.gen_records()
+    assert next(records)[0]["registry"]["key"].endswith("GoodBefore")
+    if policy == "raise":
+        with pytest.raises(ValueError, match="corrupt Start"):
+            list(records)
+    else:
+        assert list(records)[0][0]["registry"]["key"].endswith("GoodAfter")
+    assert runner.successful_records == (1 if policy == "raise" else 2)
+    assert runner.failed_records == 1
+    assert runner.errors[0] == {
+        "plugin": "services", "hive": "SYSTEM", "hive_path": "/case/SYSTEM",
+        "key": "\\ROOT\\ControlSet002\\Services\\Bad", "value": "Start",
+        "error": "ValueError: corrupt Start",
+    }
+
+
+@pytest.mark.parametrize("policy", ["continue", "raise"])
+def test_conversion_failure_obeys_record_policy(monkeypatch, policy):
+    class ResultsPlugin(BasePlugin):
+        __REGHIVE__ = "SYSTEM"
+
+        def run(self):
+            for data in ("first", object(), "last"):
+                result = PluginResult()
+                result.path = "ROOT\\Test"
+                result.custom = {"data": data}
+                yield result
+
+    monkeypatch.setattr(
+        "reg2es.models.Reg2es._build_hive_dataset",
+        lambda _paths, *_args: {"SYSTEM": [(Path("/case/SYSTEM"), _fake_registry())]},
+    )
+    runner = _runner("results", ResultsPlugin, error_policy=policy)
+    if policy == "raise":
+        with pytest.raises(TypeError, match="Unsupported value type"):
+            list(runner.gen_records())
+    else:
+        documents = list(runner.gen_records())[0]
+        assert [doc["reg2es"]["custom"]["data"] for doc in documents] == ["first", "last"]
+    assert runner.successful_records == (1 if policy == "raise" else 2)
+    assert runner.failed_records == 1
+    assert runner.errors[0]["plugin"] == "results"
+
+
+@pytest.mark.parametrize("quiet", [False, True])
+def test_jsonl_cli_reports_partial_extraction(tmp_path, monkeypatch, capsys, quiet):
+    from reg2es.views.Reg2jsonView import entry_point
+
+    source = tmp_path / "SYSTEM"
+    source.write_bytes(b"regf synthetic header")
+    destination = tmp_path / "output.jsonl"
+    reg = _services_with_bad_entry()
+    monkeypatch.setattr(
+        "reg2es.models.Reg2es._build_hive_dataset",
+        lambda _paths, *_args: {"SYSTEM": [(source, reg)]},
+    )
+    arguments = ["reg2json", str(source), "-o", str(destination),
+                 "--format", "jsonl", "--plugin", "services"]
+    if quiet:
+        arguments.append("--quiet")
+    monkeypatch.setattr("sys.argv", arguments)
+    with pytest.raises(SystemExit) as exited:
+        entry_point()
+    assert exited.value.code == 1
+    captured = capsys.readouterr()
+    assert (
+        "Partial extraction: 2 records written; 0 input failures; "
+        "1 extraction failures"
+    ) in captured.err
+    assert "completed successfully" not in captured.out
+    documents = [orjson.loads(line) for line in destination.read_bytes().splitlines()]
+    assert [doc["registry"]["key"].rsplit("\\", 1)[-1] for doc in documents] == [
+        "GoodBefore", "GoodAfter",
+    ]
+
+
+def test_es_cli_reports_partial_extraction(tmp_path, monkeypatch, capsys):
+    from reg2es.views.Reg2esView import entry_point
+
+    source = tmp_path / "SYSTEM"
+    source.write_bytes(b"regf synthetic header")
+    reg = _services_with_bad_entry()
+    monkeypatch.setattr(
+        "reg2es.models.Reg2es._build_hive_dataset",
+        lambda _paths, *_args: {"SYSTEM": [(source, reg)]},
+    )
+    client = MagicMock()
+    client.bulk_indice.side_effect = lambda records, *args: (len(records), [])
+    monkeypatch.setattr(
+        "reg2es.presenters.Reg2esPresenter.ElasticsearchUtils", lambda **kwargs: client,
+    )
+    monkeypatch.setattr("sys.argv", ["reg2es", str(source), "--plugin", "services"])
+    with pytest.raises(SystemExit) as exited:
+        entry_point()
+    assert exited.value.code == 1
+    captured = capsys.readouterr()
+    assert (
+        "Partial extraction: 2 records indexed; 0 input failures; "
+        "1 extraction failures"
+    ) in captured.err
+    assert "completed successfully" not in captured.out
+    assert "Bulk import completed" not in captured.out
+    client.close.assert_called_once()
+
+
+@pytest.mark.parametrize("hive_name, parser_name, expected", [
+    ("SYSTEM", r"C:\case\SYSTEM", r"HKLM\SYSTEM\ControlSet002\Services\GoodBefore"),
+    ("SYSTEM", r"C:\case\renamed.hive", r"HKLM\SYSTEM\ControlSet002\Services\GoodBefore"),
+    ("NTUSER.DAT", r"C:\case\NTUSER.DAT", r"HKCU\ControlSet002\Services\GoodBefore"),
+    ("NTUSER.DAT", "renamed-user.hive", r"HKCU\ControlSet002\Services\GoodBefore"),
+    ("UsrClass.DAT", r"C:\case\UsrClass.DAT", r"HKCU\Software\Classes\ControlSet002\Services\GoodBefore"),
+    ("UsrClass.DAT", "renamed-classes.hive", r"HKCU\Software\Classes\ControlSet002\Services\GoodBefore"),
+])
+def test_regtime_paths_are_mounted_once(hive_name, parser_name, expected):
+    from reg2es.plugins.regtime import Plugin
+    from reg2es.plugins.services import Plugin as ServicesPlugin
+
+    reg = _services_with_bad_entry()
+    reg._hive_name = parser_name
+    timeline = list(Plugin(reg, MagicMock(), hive_name, parser_name).run())
+    result = next(result for result in timeline if result.key_name == "GoodBefore")
+    assert result.path == "\\ROOT\\ControlSet002\\Services\\GoodBefore"
+    document = plugin_result_to_document(result, "regtime", hive_name, parser_name)
+    assert document["registry"]["path"] == expected
+    root_doc = plugin_result_to_document(timeline[0], "regtime", hive_name, parser_name)
+    assert "ROOT" not in root_doc["registry"]["path"]
+    if hive_name == "SYSTEM":
+        service = next(ServicesPlugin(reg, MagicMock(), hive_name, parser_name).run())
+        service_doc = plugin_result_to_document(service, "services", hive_name, parser_name)
+        assert document["registry"] == service_doc["registry"]
 
 
 def test_records_are_chunked_once_with_final_remainder() -> None:

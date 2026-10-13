@@ -20,6 +20,10 @@ def test_cli_default_output_uses_line_format_suffix(tmp_path, monkeypatch, outpu
     captured = {}
 
     class Presenter:
+        failed_records = 0
+        errors = []
+        successful_records = 0
+
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
@@ -153,6 +157,10 @@ def test_cli_tags_are_parsed_and_forwarded(monkeypatch, tmp_path, command):
     captured = {}
 
     class Presenter:
+        failed_records = 0
+        errors = []
+        successful_records = 0
+
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
@@ -160,7 +168,7 @@ def test_cli_tags_are_parsed_and_forwarded(monkeypatch, tmp_path, command):
             pass
 
         def bulk_import(self):
-            pass
+            return 0, []
 
     attribute = "Reg2jsonPresenter" if command == "Reg2json" else "Reg2esPresenter"
     monkeypatch.setattr(module, attribute, Presenter)
@@ -172,3 +180,92 @@ def test_cli_tags_are_parsed_and_forwarded(monkeypatch, tmp_path, command):
     getattr(module, command + "View")().run()
 
     assert captured["additional_tags"] == ["registry", "host-01", "case-42", "host-01"]
+
+@pytest.mark.parametrize("command", ["Reg2es", "Reg2json"])
+def test_cli_processes_valid_deduplicated_hive_and_reports_bad_inputs_even_quiet(
+    tmp_path, monkeypatch, capsys, command
+):
+    module = importlib.import_module(f"reg2es.views.{command}View")
+    source = tmp_path / "SYSTEM"
+    source.write_bytes(b"regf valid")
+    empty = tmp_path / "empty"
+    empty.write_bytes(b"")
+    missing = tmp_path / "missing"
+    captured = {}
+
+    class Presenter:
+        successful_records = 1
+        failed_records = 0
+        errors = []
+
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.errors = kwargs.get("input_diagnostics", [])
+            self.failed_records = len(self.errors)
+
+        def export_json(self):
+            return []
+
+        def bulk_import(self):
+            return 1, []
+
+    attribute = "Reg2jsonPresenter" if command == "Reg2json" else "Reg2esPresenter"
+    monkeypatch.setattr(module, attribute, Presenter)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [command.lower(), str(source), str(source), str(missing), str(empty), "--quiet"],
+    )
+
+    with pytest.raises(SystemExit) as exited:
+        module.entry_point()
+
+    assert exited.value.code == 1
+    assert captured["input_paths"] == [source.resolve() if command == "Reg2es" else str(source.resolve())]
+    captured_output = capsys.readouterr()
+    assert "does not exist" in captured_output.err.lower()
+    assert "not a registry hive" in captured_output.err.lower()
+    assert "2 input failures; 0 extraction failures" in captured_output.err
+    assert captured_output.out == ""
+
+@pytest.mark.parametrize("command", ["Reg2es", "Reg2json"])
+def test_cli_reports_output_or_es_failure_without_traceback(
+    tmp_path, monkeypatch, capsys, command
+):
+    module = importlib.import_module(f"reg2es.views.{command}View")
+    source = tmp_path / "SYSTEM"
+    source.write_bytes(b"regf valid")
+
+    class Presenter:
+        def __init__(self, **kwargs):
+            pass
+
+        def export_json(self):
+            raise OSError("cannot write output")
+
+        def bulk_import(self):
+            raise RuntimeError("Elasticsearch unavailable")
+
+    attribute = "Reg2jsonPresenter" if command == "Reg2json" else "Reg2esPresenter"
+    monkeypatch.setattr(module, attribute, Presenter)
+    monkeypatch.setattr(sys, "argv", [command.lower(), str(source), "--quiet"])
+
+    with pytest.raises(SystemExit) as exited:
+        module.entry_point()
+
+    assert exited.value.code == 1
+    captured = capsys.readouterr()
+    assert "Traceback" not in captured.err
+    assert ("cannot write output" if command == "Reg2json" else "Elasticsearch unavailable") in captured.err
+    assert captured.out == ""
+
+@pytest.mark.parametrize("command", ["Reg2es", "Reg2json"])
+def test_cli_keeps_argparse_usage_errors_at_status_two(monkeypatch, capsys, command):
+    module = importlib.import_module(f"reg2es.views.{command}View")
+    monkeypatch.setattr(sys, "argv", [command.lower(), "--size", "0"])
+
+    with pytest.raises(SystemExit) as exited:
+        module.entry_point()
+
+    assert exited.value.code == 2
+    assert "must be greater than zero" in capsys.readouterr().err

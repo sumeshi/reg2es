@@ -1,5 +1,6 @@
 # coding: utf-8
 import argparse
+import sys
 from abc import ABCMeta, abstractmethod
 from typing import List, Optional
 
@@ -69,6 +70,22 @@ class BaseView(metaclass=ABCMeta):
     def log(self, message: str, is_quiet: bool):
         if not is_quiet:
             print(message)
+
+    def report_input_issues(self, errors, notices=()):
+        for message in notices:
+            print(f"Warning: {message}", file=sys.stderr)
+        for message in errors:
+            print(
+                f"Error: {message.get('source_file', 'registry input')}: "
+                f"{message.get('error', 'input skipped')}",
+                file=sys.stderr,
+            )
+
+    def report_extraction_errors(self, errors):
+        for error in errors:
+            path = error.get("source_file", error.get("hive_path", "registry input"))
+            message = error.get("error", "extraction failed")
+            print(f"Error: {path}: {message}", file=sys.stderr)
 
     def parse_tags(self) -> Optional[List[str]]:
         """Parse the common comma-separated tag option."""
