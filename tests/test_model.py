@@ -862,7 +862,7 @@ def test_services_runner_reports_entry_failures(policy, monkeypatch):
     assert runner.successful_records == (1 if policy == "raise" else 2)
     assert runner.failed_records == 1
     assert runner.errors[0] == {
-        "plugin": "services", "hive": "SYSTEM", "hive_path": "/case/SYSTEM",
+        "plugin": "services", "hive": "SYSTEM", "hive_path": str(Path("/case/SYSTEM")),
         "key": "\\ROOT\\ControlSet002\\Services\\Bad", "value": "Start",
         "error": "ValueError: corrupt Start",
     }
