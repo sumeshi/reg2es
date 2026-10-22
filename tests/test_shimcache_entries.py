@@ -1,4 +1,4 @@
-"""Regression checks for ShimCache entry parsing (XP branch and dedup)."""
+"""Regression checks for ShimCache parsing and retained entry evidence."""
 
 import struct
 import logging
@@ -8,6 +8,7 @@ import pytest
 from Registry.Registry import RegBin
 
 from reg2es.plugins import shimcache
+from reg2es.models.ElasticsearchUtils import ElasticsearchUtils
 from reg2es.models.Reg2es import plugin_result_to_document
 from tests.regrippy.reg_mock import RegistryKeyMock, RegistryMock, RegistryValueMock
 
@@ -30,6 +31,60 @@ def _winxp_cache(entries):
     struct.pack_into("<L", header, 0, shimcache.WINXP_MAGIC32)
     struct.pack_into("<L", header, 8, len(entries))
     return bytes(header) + b"".join(entries)
+
+
+def _plugin_documents(cache):
+    key = RegistryKeyMock.build(r"ControlSet001\Control\Session Manager\AppCompatCache")
+    key.add_value(RegistryValueMock("AppCompatCache", cache, RegBin))
+    reg = RegistryMock("SYSTEM", "system", key.root())
+    reg.set_ccs(1)
+    return [
+        plugin_result_to_document(result, "shimcache", "SYSTEM", "-")
+        for result in shimcache.Plugin(
+            reg, logging.getLogger(__name__), "SYSTEM", "-"
+        ).run()
+    ]
+
+
+@pytest.mark.parametrize("magic", [shimcache.WIN8_MAGIC, shimcache.WIN81_MAGIC])
+def test_execution_flags_survive_conversion_and_distinguish_document_ids(magic):
+    path = r"C:\same.exe".encode("utf-16le")
+    cache = bytearray(shimcache.WIN8_STATS_SIZE)
+    for flags in (shimcache.CSRSS_FLAG, 0):
+        body = (
+            struct.pack("<H", len(path)) + path + struct.pack("<H", 0)
+            + struct.pack("<LLLLL", flags, 0, FILETIME & 0xFFFFFFFF, FILETIME >> 32, 0)
+        )
+        cache.extend(struct.pack("<4sLL", magic, 0, len(body)) + body)
+
+    documents = _plugin_documents(bytes(cache))
+    assert len(documents) == 2
+    assert [doc["reg2es"]["custom"]["exec_flag"] for doc in documents] == [
+        "True", "False"
+    ]
+    es = object.__new__(ElasticsearchUtils)
+    assert es.calc_hash(documents[0]) != es.calc_hash(documents[1])
+    without_flags = orjson.loads(orjson.dumps(documents))
+    for doc in without_flags:
+        del doc["reg2es"]["custom"]["exec_flag"]
+    assert without_flags[0] == without_flags[1]
+
+
+@pytest.mark.parametrize("cache_format", ["xp", "win10"])
+def test_formats_without_execution_flags_omit_the_field(cache_format):
+    if cache_format == "xp":
+        cache = _winxp_cache([_winxp_entry(r"C:\same.exe")])
+    else:
+        path = r"C:\same.exe".encode("utf-16le")
+        body = struct.pack("<H", len(path)) + path + struct.pack("<Q", FILETIME)
+        cache = (
+            bytes(shimcache.WIN10_STATS_SIZE)
+            + struct.pack("<4sLL", shimcache.WIN10_MAGIC, 0, len(body)) + body
+        )
+
+    documents = _plugin_documents(cache)
+    assert len(documents) == 1
+    assert "exec_flag" not in documents[0]["reg2es"]["custom"]
 
 
 def test_winxp_entries_are_parsed_and_expose_file_mtime():

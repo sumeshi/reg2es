@@ -9,6 +9,7 @@
 # Modifications: regrippy imports were changed to reg2es.plugins and the
 # formerly separate ShimCacheParser module was integrated; unused CLI display helpers removed.
 # Artifact times retain raw FILETIME precision; Win8/10 preserve every entry.
+# Available execution flags are retained in plugin custom data.
 
 from reg2es.plugins import BasePlugin, PluginResult, filetime_to_datetime
 
@@ -586,6 +587,8 @@ class Plugin(BasePlugin):
         for entry in read_cache_results:
             res = PluginResult(key=key, value=None)
             res.custom["date"] = entry.date
+            if entry.exec_flag in ("True", "False"):
+                res.custom["exec_flag"] = entry.exec_flag
             # Raw unsigned QWORDs can exceed Elasticsearch's signed long
             # range, especially sentinels; keep a stable, lossless text type.
             res.custom["file_mtime_raw"] = str(entry.raw_filetime)
