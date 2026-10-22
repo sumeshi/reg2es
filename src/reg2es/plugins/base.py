@@ -1,6 +1,7 @@
 # This file is derived from regrippy (https://github.com/airbus-cert/regrippy)
 # commit 32e3ab3243415b7bf46f812d933f4d29862e3046 (v2.0.3), licensed under Apache-2.0.
-# Modifications: imports adapted to reg2es.plugins; unused CLI display helpers removed.
+# Modifications: imports adapted to reg2es.plugins; unused CLI display helpers
+# removed; optional diagnostic stages added.
 
 import struct
 from datetime import datetime, timedelta, timezone
@@ -94,8 +95,12 @@ class BasePlugin(object):
         self.errors = []
         self.plugin_name = type(self).__module__.rsplit(".", 1)[-1]
 
-    def record_error(self, key, value, error):
-        """Report a failed entry to the runner and honor its strict policy."""
+    def record_error(self, key, value, error, *, stage=None):
+        """Report a failed entry and honor strict policy.
+
+        Plugins can identify a failing operation with ``stage``. Omitting it
+        preserves the existing diagnostic shape.
+        """
         diagnostic = {
             "plugin": self.plugin_name,
             "hive": self.hive_name,
@@ -104,6 +109,8 @@ class BasePlugin(object):
             "value": value,
             "error": f"{type(error).__name__}: {error}",
         }
+        if stage is not None:
+            diagnostic["stage"] = stage
         self.errors.append(diagnostic)
         self.warning("Record extraction failed: " + repr(diagnostic))
         if self.error_policy == "raise":
