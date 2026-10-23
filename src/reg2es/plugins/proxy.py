@@ -20,7 +20,7 @@ class Plugin(BasePlugin):
         r = PluginResult(key=k)
 
         r.custom["type"] = "proxy"
-        r.custom["enabled"] = self.safe_value(k, "ProxyEnabled", 0) == 1
+        r.custom["enabled"] = self.safe_value(k, "ProxyEnable", 0) == 1
         r.custom["proxy"] = self.safe_value(k, "ProxyServer", "N/A")
         r.custom["exceptions"] = self.safe_value(k, "ProxyOverride", "")
 

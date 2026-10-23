@@ -27,7 +27,7 @@ VALUES = [
 ]
 
 
-def make_hive(values=VALUES):
+def make_hive(values=VALUES, *, tree=None):
     hbin = bytearray(0x20)
     hbin[:4] = b"hbin"
 
@@ -84,14 +84,12 @@ def make_hive(values=VALUES):
     env = ("Environment", [], values)
     manager = ("Session Manager", [env], [])
     control = ("Control", [manager], [])
-    root_offset = key(
-        "ROOT",
-        None,
-        [
+    if tree is None:
+        tree = [
             ("Select", [], [("Current", 4, struct.pack("<I", 1))]),
             ("ControlSet001", [control], []),
-        ],
-    )
+        ]
+    root_offset = key("ROOT", None, tree)
     total = ((len(hbin) + 8 + 4095) // 4096) * 4096
     free_size = total - len(hbin)
     hbin.extend(struct.pack("<i", free_size) + bytes(free_size - 4))

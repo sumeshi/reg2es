@@ -19,7 +19,7 @@ def mock_reg():
 
     # Add a normal proxy config
     url = RegistryValueMock("ProxyServer", "172.16.2.34:8080", RegSZ)
-    enabled = RegistryValueMock("ProxyEnabled", 1, RegDWord)
+    enabled = RegistryValueMock("ProxyEnable", 1, RegDWord)
     exceptions = RegistryValueMock("ProxyOverride", "10.0.0.0/8", RegSZ)
 
     key.add_value(url)

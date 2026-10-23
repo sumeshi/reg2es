@@ -196,372 +196,296 @@ def _make_entry(
     )
 
 
-# Read the Shim Cache format, return a list of last modified dates/paths.
-def read_cache(cachebin):
+_PARSE_ERRORS = (RuntimeError, ValueError, TypeError, NameError, struct.error)
 
-    if len(cachebin) < 16:
-        # Data size less than minimum header size.
-        return None
 
+def _report_error(on_error, error, offset=None):
+    if offset is not None:
+        error = ValueError(f"ShimCache entry at byte {offset}: {error}")
+    if on_error is None:
+        raise error
+    # A strict-policy callback can raise here. Keep it outside parsing try
+    # blocks so the same failure is never caught or reported twice.
+    on_error(error)
+
+
+def _read_exact(stream, size):
+    data = stream.read(size)
+    if len(data) != size:
+        raise ValueError(f"Truncated ShimCache data: expected {size} bytes")
+    return data
+
+
+def _fixed_entries(bin_data, start, count, size, on_error):
+    for index in range(count):
+        offset = start + index * size
+        if offset + size > len(bin_data):
+            _report_error(on_error, ValueError("Truncated entry table"), offset)
+            break
+        yield offset, bin_data[offset : offset + size]
+
+
+def _entry_frames(bin_data, start, ver_magic, on_error):
+    data = BytesIO(bin_data)
+    data.seek(start)
+    while data.tell() < len(bin_data):
+        offset = data.tell()
+        try:
+            magic, _crc32, entry_len = struct.unpack("<4sLL", _read_exact(data, 12))
+        except _PARSE_ERRORS as error:
+            _report_error(on_error, error, offset)
+            break  # A partial frame header has no trustworthy next boundary.
+        body = data.read(entry_len)
+        if len(body) != entry_len:
+            _report_error(on_error, ValueError("Truncated entry frame"), offset)
+            break
+        if magic != ver_magic:
+            _report_error(on_error, ValueError("Invalid version magic tag"), offset)
+            continue
+        yield offset, BytesIO(body)
+
+
+# Read the Shim Cache format, returning [] only for a successfully empty cache.
+def read_cache(cachebin, on_error=None):
+    creators_update = False
     try:
-        # Get the format type
-        magic = struct.unpack("<L", cachebin[0:4])[0]
-
-        # This is a Windows 2k3/Vista/2k8 Shim Cache format,
-        if magic == CACHE_MAGIC_NT5_2:
-
-            # Shim Cache types can come in 32-bit or 64-bit formats. We can
-            # determine this because 64-bit entries are serialized with u_int64
-            # pointers. This means that in a 64-bit entry, valid UNICODE_STRING
-            # sizes are followed by a NULL DWORD. Check for this here.
-            test_size = struct.unpack("<H", cachebin[8:10])[0]
-            test_max_size = struct.unpack("<H", cachebin[10:12])[0]
-            if (
-                test_max_size - test_size == 2
-                and struct.unpack("<L", cachebin[12:16])[0]
-            ) == 0:
-                logger.debug("[+] Found 64bit Windows 2k3/Vista/2k8 Shim Cache data...")
-                entry = CacheEntryNt5(False)
-                return read_nt5_entries(cachebin, entry)
-
-            # Otherwise it's 32-bit data.
+        if len(cachebin) < 4:
+            raise ValueError("Truncated ShimCache header")
+        magic = struct.unpack_from("<L", cachebin)[0]
+        if magic in (CACHE_MAGIC_NT5_2, CACHE_MAGIC_NT6_1):
+            header_size = (
+                CACHE_HEADER_SIZE_NT5_2
+                if magic == CACHE_MAGIC_NT5_2
+                else CACHE_HEADER_SIZE_NT6_1
+            )
+            if len(cachebin) < header_size:
+                raise ValueError("Truncated ShimCache header")
+            if struct.unpack_from("<L", cachebin, 4)[0] == 0:
+                return []
+            test_size, test_max_size, padding = struct.unpack_from(
+                "<HHL", cachebin, header_size
+            )
+            is32bit = not (test_max_size - test_size == 2 and padding == 0)
+            if magic == CACHE_MAGIC_NT5_2:
+                parser, argument = read_nt5_entries, CacheEntryNt5(is32bit)
             else:
-                logger.debug("[+] Found 32bit Windows 2k3/Vista/2k8 Shim Cache data...")
-                entry = CacheEntryNt5(True)
-                return read_nt5_entries(cachebin, entry)
-
-        # This is a Windows 7/2k8-R2 Shim Cache.
-        elif magic == CACHE_MAGIC_NT6_1:
-            test_size = struct.unpack(
-                "<H", cachebin[CACHE_HEADER_SIZE_NT6_1 : CACHE_HEADER_SIZE_NT6_1 + 2]
-            )[0]
-            test_max_size = struct.unpack(
-                "<H",
-                cachebin[CACHE_HEADER_SIZE_NT6_1 + 2 : CACHE_HEADER_SIZE_NT6_1 + 4],
-            )[0]
-
-            # Shim Cache types can come in 32-bit or 64-bit formats.
-            # We can determine this because 64-bit entries are serialized with
-            # u_int64 pointers. This means that in a 64-bit entry, valid
-            # UNICODE_STRING sizes are followed by a NULL DWORD. Check for this here.
-            if (
-                test_max_size - test_size == 2
-                and struct.unpack(
-                    "<L",
-                    cachebin[CACHE_HEADER_SIZE_NT6_1 + 4 : CACHE_HEADER_SIZE_NT6_1 + 8],
-                )[0]
-            ) == 0:
-                logger.debug("[+] Found 64bit Windows 7/2k8-R2 Shim Cache data...")
-                entry = CacheEntryNt6(False)
-                return read_nt6_entries(cachebin, entry)
-            else:
-                logger.debug("[+] Found 32bit Windows 7/2k8-R2 Shim Cache data...")
-                entry = CacheEntryNt6(True)
-                return read_nt6_entries(cachebin, entry)
-
-        # This is WinXP cache data
+                parser, argument = read_nt6_entries, CacheEntryNt6(is32bit)
         elif magic == WINXP_MAGIC32:
-            logger.debug("[+] Found 32bit Windows XP Shim Cache data...")
-            return read_winxp_entries(cachebin)
-
-        # Check the data set to see if it matches the Windows 8 format.
-        elif (
-            len(cachebin) > WIN8_STATS_SIZE
-            and cachebin[WIN8_STATS_SIZE : WIN8_STATS_SIZE + 4] == WIN8_MAGIC
+            if len(cachebin) < WINXP_HEADER_SIZE32:
+                raise ValueError("Truncated Windows XP ShimCache header")
+            parser, argument = read_winxp_entries, None
+        elif cachebin[WIN8_STATS_SIZE : WIN8_STATS_SIZE + 4] in (
+            WIN8_MAGIC,
+            WIN81_MAGIC,
         ):
-            logger.debug("[+] Found Windows 8/2k12 Apphelp Cache data...")
-            return read_win8_entries(cachebin, WIN8_MAGIC)
-
-        # Windows 8.1 will use a different magic dword, check for it
+            parser, argument = (
+                read_win8_entries,
+                cachebin[WIN8_STATS_SIZE : WIN8_STATS_SIZE + 4],
+            )
+        elif cachebin[WIN10_STATS_SIZE : WIN10_STATS_SIZE + 4] == WIN10_MAGIC:
+            parser, argument = read_win10_entries, WIN10_MAGIC
         elif (
-            len(cachebin) > WIN8_STATS_SIZE
-            and cachebin[WIN8_STATS_SIZE : WIN8_STATS_SIZE + 4] == WIN81_MAGIC
-        ):
-            logger.debug("[+] Found Windows 8.1 Apphelp Cache data...")
-            return read_win8_entries(cachebin, WIN81_MAGIC)
-
-        # Windows 10 will use a different magic dword, check for it
-        elif (
-            len(cachebin) > WIN10_STATS_SIZE
-            and cachebin[WIN10_STATS_SIZE : WIN10_STATS_SIZE + 4] == WIN10_MAGIC
-        ):
-            logger.debug("[+] Found Windows 10 Apphelp Cache data...")
-            return read_win10_entries(cachebin, WIN10_MAGIC)
-
-        # Windows 10 Creators Update will use a different STATS_SIZE, account for it
-        elif (
-            len(cachebin) > WIN10_CREATORS_STATS_SIZE
-            and cachebin[WIN10_CREATORS_STATS_SIZE : WIN10_CREATORS_STATS_SIZE + 4]
+            cachebin[WIN10_CREATORS_STATS_SIZE : WIN10_CREATORS_STATS_SIZE + 4]
             == WIN10_MAGIC
         ):
-            logger.debug("[+] Found Windows 10 Creators Update Apphelp Cache data...")
-            return read_win10_entries(cachebin, WIN10_MAGIC, creators_update=True)
-
+            parser, argument = read_win10_entries, WIN10_MAGIC
+            creators_update = True
+        elif (
+            magic in (WIN10_STATS_SIZE, WIN10_CREATORS_STATS_SIZE)
+            and len(cachebin) == magic
+        ):
+            return []
         else:
-            logger.error(
-                "[-] Got an unrecognized magic value of 0x%x... bailing" % magic
-            )
-            return None
-
-    except (RuntimeError, TypeError, NameError) as err:
-        logger.error("[-] Error reading Shim Cache data: %s" % err)
-        return None
+            raise ValueError(f"Unrecognized ShimCache magic 0x{magic:x}")
+    except _PARSE_ERRORS as error:
+        _report_error(on_error, error)
+        return []
+    if argument is None:
+        return parser(cachebin, on_error=on_error)
+    if creators_update:
+        return parser(cachebin, argument, creators_update=True, on_error=on_error)
+    return parser(cachebin, argument, on_error=on_error)
 
 
 # Read Windows 8/2k12/8.1 Apphelp Cache entry formats.
-def read_win8_entries(bin_data, ver_magic):
-    offset = 0
-    entry_meta_len = 12
+def read_win8_entries(bin_data, ver_magic, on_error=None):
     entry_list = []
-
-    # Skip past the stats in the header
-    cache_data = bin_data[WIN8_STATS_SIZE:]
-
-    data = BytesIO(cache_data)
-    while data.tell() < len(cache_data):
-        header = data.read(entry_meta_len)
-        # Read in the entry metadata
-        # Note: the crc32 hash is of the cache entry data
-        magic, crc32_hash, entry_len = struct.unpack("<4sLL", header)
-
-        # Check the magic tag
-        if magic != ver_magic:
-            raise Exception(
-                "Invalid version magic tag found: 0x%x" % struct.unpack("<L", magic)[0]
+    for offset, entry_data in _entry_frames(
+        bin_data, WIN8_STATS_SIZE, ver_magic, on_error
+    ):
+        try:
+            path_len = struct.unpack("<H", _read_exact(entry_data, 2))[0]
+            path = (
+                _read_exact(entry_data, path_len).decode("utf-16le", "replace")
+                if path_len
+                else "None"
             )
-
-        entry_data = BytesIO(data.read(entry_len))
-
-        # Read the path length
-        path_len = struct.unpack("<H", entry_data.read(2))[0]
-        if path_len == 0:
-            path = "None"
-        else:
-            path = entry_data.read(path_len).decode("utf-16le", "replace")
-
-        # Check for package data
-        package_len = struct.unpack("<H", entry_data.read(2))[0]
-        if package_len > 0:
-            # Just skip past the package data if present (for now)
-            entry_data.seek(package_len, 1)
-
-        # Read the remaining entry data
-        flags, unk_1, low_datetime, high_datetime, unk_2 = struct.unpack(
-            "<LLLLL", entry_data.read(20)
-        )
-
-        # Check the flag set in CSRSS
-        if flags & CSRSS_FLAG:
-            exec_flag = "True"
-        else:
-            exec_flag = "False"
-
-        entry_list.append(
-            _make_entry(low_datetime, high_datetime, path, exec_flag=exec_flag),
-        )
-
+            package_len = struct.unpack("<H", _read_exact(entry_data, 2))[0]
+            _read_exact(entry_data, package_len)
+            flags, _unk1, low_datetime, high_datetime, _unk2 = struct.unpack(
+                "<LLLLL", _read_exact(entry_data, 20)
+            )
+            entry = _make_entry(
+                low_datetime,
+                high_datetime,
+                path,
+                exec_flag="True" if flags & CSRSS_FLAG else "False",
+            )
+        except _PARSE_ERRORS as error:
+            _report_error(on_error, error, offset)
+            continue
+        entry_list.append(entry)
     return entry_list
 
 
-# Read Windows 10 Apphelp Cache entry format
-def read_win10_entries(bin_data, ver_magic, creators_update=False):
-
-    offset = 0
-    entry_meta_len = 12
+# Read Windows 10 Apphelp Cache entry format.
+def read_win10_entries(bin_data, ver_magic, creators_update=False, on_error=None):
+    start = WIN10_CREATORS_STATS_SIZE if creators_update else WIN10_STATS_SIZE
     entry_list = []
-
-    # Skip past the stats in the header
-    if creators_update:
-        cache_data = bin_data[WIN10_CREATORS_STATS_SIZE:]
-    else:
-        cache_data = bin_data[WIN10_STATS_SIZE:]
-
-    data = BytesIO(cache_data)
-    while data.tell() < len(cache_data):
-        header = data.read(entry_meta_len)
-        # Read in the entry metadata
-        # Note: the crc32 hash is of the cache entry data
-        magic, crc32_hash, entry_len = struct.unpack("<4sLL", header)
-
-        # Check the magic tag
-        if magic != ver_magic:
-            raise Exception(
-                "Invalid version magic tag found: 0x%x" % struct.unpack("<L", magic)[0]
+    for offset, entry_data in _entry_frames(bin_data, start, ver_magic, on_error):
+        try:
+            path_len = struct.unpack("<H", _read_exact(entry_data, 2))[0]
+            path = (
+                _read_exact(entry_data, path_len).decode("utf-16le", "replace")
+                if path_len
+                else "None"
             )
-
-        entry_data = BytesIO(data.read(entry_len))
-
-        # Read the path length
-        path_len = struct.unpack("<H", entry_data.read(2))[0]
-        if path_len == 0:
-            path = "None"
-        else:
-            path = entry_data.read(path_len).decode("utf-16le", "replace")
-
-        # Read the remaining entry data
-        low_datetime, high_datetime = struct.unpack("<LL", entry_data.read(8))
-
+            low_datetime, high_datetime = struct.unpack(
+                "<LL", _read_exact(entry_data, 8)
+            )
+            entry = _make_entry(low_datetime, high_datetime, path)
+        except _PARSE_ERRORS as error:
+            _report_error(on_error, error, offset)
+            continue
         # Keep every physical entry, including entries whose time is unknown.
-        entry_list.append(_make_entry(low_datetime, high_datetime, path))
-
+        entry_list.append(entry)
     return entry_list
 
 
 # Read Windows 2k3/Vista/2k8 Shim Cache entry formats.
-def read_nt5_entries(bin_data, entry):
-
-    try:
-        entry_list = []
-        contains_file_size = False
-        entry_size = entry.size()
-
-        num_entries = struct.unpack("<L", bin_data[4:8])[0]
-        if num_entries == 0:
-            return None
-
-        # On Windows Server 2008/Vista, the filesize is swapped out of this
-        # structure with two 4-byte flags. Check to see if any of the values in
-        # "dwFileSizeLow" are larger than 2-bits. This indicates the entry contained file sizes.
-        for offset in range(
-            CACHE_HEADER_SIZE_NT5_2,
-            (num_entries * entry_size) + CACHE_HEADER_SIZE_NT5_2,
-            entry_size,
-        ):
-
-            entry.update(bin_data[offset : offset + entry_size])
-
-            if entry.dwFileSizeLow > 3:
-                contains_file_size = True
-                break
-
-        # Now grab all the data in the value.
-        for offset in range(
-            CACHE_HEADER_SIZE_NT5_2,
-            (num_entries * entry_size) + CACHE_HEADER_SIZE_NT5_2,
-            entry_size,
-        ):
-
-            entry.update(bin_data[offset : offset + entry_size])
-
-            path = bin_data[entry.Offset : entry.Offset + entry.wLength].decode(
-                "utf-16le", "replace"
-            )
-
-            # Filesize-format entries have no CSRSS flag to report; flag-format
-            # entries do.
-            exec_flag = "N/A"
-            if not contains_file_size:
-                exec_flag = "True" if entry.dwFileSizeLow & CSRSS_FLAG else "False"
-
-            _append_entry(
-                entry_list,
-                _make_entry(
-                    entry.dwLowDateTime,
-                    entry.dwHighDateTime,
-                    path,
-                    exec_flag=exec_flag,
-                    file_size=entry.dwFileSizeLow if contains_file_size else None,
-                ),
-            )
-
-        return entry_list
-
-    except (RuntimeError, ValueError, NameError) as err:
-        logger.error("[-] Error reading Shim Cache data: %s..." % err)
-        return None
-
-
-# Read the Shim Cache Windows 7/2k8-R2 entry format,
-# return a list of last modifed dates/paths.
-def read_nt6_entries(bin_data, entry):
-
-    try:
-        entry_list = []
-        exec_flag = ""
-        entry_size = entry.size()
-        num_entries = struct.unpack("<L", bin_data[4:8])[0]
-
-        if num_entries == 0:
-            return None
-
-        # Walk each entry in the data structure.
-        for offset in range(
-            CACHE_HEADER_SIZE_NT6_1,
-            num_entries * entry_size + CACHE_HEADER_SIZE_NT6_1,
-            entry_size,
-        ):
-
-            entry.update(bin_data[offset : offset + entry_size])
-            path = bin_data[entry.Offset : entry.Offset + entry.wLength].decode(
-                "utf-16le", "replace"
-            )
-
-            # Test to see if the file may have been executed.
-            exec_flag = "True" if entry.FileFlags & CSRSS_FLAG else "False"
-            _append_entry(
-                entry_list,
-                _make_entry(
-                    entry.dwLowDateTime,
-                    entry.dwHighDateTime,
-                    path,
-                    exec_flag=exec_flag,
-                ),
-            )
-        return entry_list
-
-    except (RuntimeError, ValueError, NameError) as err:
-        logger.error("[-] Error reading Shim Cache data: %s..." % err)
-        return None
-
-
-# Read the WinXP Shim Cache data. Some entries can be missing data but still
-# contain useful information, so try to get as much as we can.
-def read_winxp_entries(bin_data):
-
+def read_nt5_entries(bin_data, entry, on_error=None):
     entry_list = []
-
+    entry_size = entry.size()
     try:
-
-        num_entries = struct.unpack("<L", bin_data[8:12])[0]
-        if num_entries == 0:
-            return None
-
+        num_entries = struct.unpack_from("<L", bin_data, 4)[0]
+    except _PARSE_ERRORS as error:
+        _report_error(on_error, error)
+        return entry_list
+    # Vista/Server 2008 replace the two size DWORDs with flags. Preserve the
+    # existing distinction, based on complete entries only.
+    available = max(0, (len(bin_data) - CACHE_HEADER_SIZE_NT5_2) // entry_size)
+    contains_file_size = any(
+        struct.unpack_from("<L", bin_data, offset + entry_size - 8)[0] > 3
         for offset in range(
-            WINXP_HEADER_SIZE32,
-            (num_entries * WINXP_ENTRY_SIZE32) + WINXP_HEADER_SIZE32,
-            WINXP_ENTRY_SIZE32,
-        ):
-
-            # No size values are included in these entries, so search for utf-16 terminator.
-            path_len = bin_data[offset : offset + (MAX_PATH + 8)].find(b"\x00\x00")
-
-            # if path is corrupt, procede to next entry.
-            if path_len == 0:
-                continue
-            path = bin_data[offset : offset + path_len + 1].decode("utf-16le")
-
-            entry_data = offset + (MAX_PATH + 8)
-
-            # Get last mod time.
-            last_mod_time = struct.unpack("<2L", bin_data[entry_data : entry_data + 8])
-            file_size = struct.unpack_from("<Q", bin_data, entry_data + 8)[0]
-            cache_update_raw = struct.unpack_from("<Q", bin_data, entry_data + 16)[0]
-
-            _append_entry(
-                entry_list,
-                _make_entry(
-                    last_mod_time[0],
-                    last_mod_time[1],
-                    path,
-                    file_size=file_size,
-                    cache_update_raw=cache_update_raw,
+            CACHE_HEADER_SIZE_NT5_2,
+            CACHE_HEADER_SIZE_NT5_2 + min(num_entries, available) * entry_size,
+            entry_size,
+        )
+    )
+    for offset, raw_entry in _fixed_entries(
+        bin_data, CACHE_HEADER_SIZE_NT5_2, num_entries, entry_size, on_error
+    ):
+        try:
+            entry.update(raw_entry)
+            path = _read_legacy_path(bin_data, entry)
+            exec_flag = (
+                "N/A"
+                if contains_file_size
+                else ("True" if entry.dwFileSizeLow & CSRSS_FLAG else "False")
+            )
+            parsed = _make_entry(
+                entry.dwLowDateTime,
+                entry.dwHighDateTime,
+                path,
+                exec_flag=exec_flag,
+                file_size=(
+                    ((entry.dwFileSizeHigh << 32) | entry.dwFileSizeLow)
+                    if contains_file_size
+                    else None
                 ),
             )
-        return entry_list
+        except _PARSE_ERRORS as error:
+            _report_error(on_error, error, offset)
+            continue
+        _append_entry(entry_list, parsed)
+    return entry_list
 
-    except (RuntimeError, ValueError, TypeError, NameError) as err:
-        logger.error("[-] Error reading Shim Cache data %s" % err)
-        return None
+
+def _read_legacy_path(bin_data, entry):
+    end = entry.Offset + entry.wLength
+    if end > len(bin_data):
+        raise ValueError("Truncated ShimCache path")
+    return bin_data[entry.Offset : end].decode("utf-16le", "replace")
+
+
+# Read the Shim Cache Windows 7/2k8-R2 entry format.
+def read_nt6_entries(bin_data, entry, on_error=None):
+    entry_list = []
+    try:
+        num_entries = struct.unpack_from("<L", bin_data, 4)[0]
+    except _PARSE_ERRORS as error:
+        _report_error(on_error, error)
+        return entry_list
+    for offset, raw_entry in _fixed_entries(
+        bin_data, CACHE_HEADER_SIZE_NT6_1, num_entries, entry.size(), on_error
+    ):
+        try:
+            entry.update(raw_entry)
+            path = _read_legacy_path(bin_data, entry)
+            parsed = _make_entry(
+                entry.dwLowDateTime,
+                entry.dwHighDateTime,
+                path,
+                exec_flag="True" if entry.FileFlags & CSRSS_FLAG else "False",
+            )
+        except _PARSE_ERRORS as error:
+            _report_error(on_error, error, offset)
+            continue
+        _append_entry(entry_list, parsed)
+    return entry_list
+
+
+# Fixed-size Windows XP entries let us recover after one unreadable path.
+def read_winxp_entries(bin_data, on_error=None):
+    entry_list = []
+    try:
+        num_entries = struct.unpack_from("<L", bin_data, 8)[0]
+    except _PARSE_ERRORS as error:
+        _report_error(on_error, error)
+        return entry_list
+    for offset, raw_entry in _fixed_entries(
+        bin_data, WINXP_HEADER_SIZE32, num_entries, WINXP_ENTRY_SIZE32, on_error
+    ):
+        try:
+            path_data = raw_entry[: MAX_PATH + 8]
+            terminator = next(
+                (
+                    index
+                    for index in range(0, len(path_data), 2)
+                    if path_data[index : index + 2] == b"\x00\x00"
+                ),
+                None,
+            )
+            if terminator is None:
+                raise ValueError("Unterminated Windows XP ShimCache path")
+            if terminator == 0:
+                continue  # An unused slot has no path or entry to emit.
+            path = path_data[:terminator].decode("utf-16le")
+            low_datetime, high_datetime, file_size, cache_update_raw = (
+                struct.unpack_from("<2LQQ", raw_entry, MAX_PATH + 8)
+            )
+            parsed = _make_entry(
+                low_datetime,
+                high_datetime,
+                path,
+                file_size=file_size,
+                cache_update_raw=cache_update_raw,
+            )
+        except _PARSE_ERRORS as error:
+            _report_error(on_error, error, offset)
+            continue
+        _append_entry(entry_list, parsed)
+    return entry_list
 
 
 class Plugin(BasePlugin):
@@ -580,7 +504,12 @@ class Plugin(BasePlugin):
 
         if not key:
             return
-        read_cache_results = read_cache(key.value("AppCompatCache").value())
+        value = key.value("AppCompatCache")
+
+        def on_error(error):
+            self.record_error(key.path(), value.name(), error, stage="shimcache")
+
+        read_cache_results = read_cache(value.value(), on_error=on_error)
         if not read_cache_results:
             return
 
