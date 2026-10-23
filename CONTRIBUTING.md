@@ -22,13 +22,13 @@ $ cd reg2es
 
 ```bash
 $ pip install uv
-$ uv sync --dev
+$ uv sync --locked
 ```
 
 ### Running Tests
 
 ```bash
-$ uv run pytest
+$ uv run --locked pytest
 ```
 
 ### Code Style

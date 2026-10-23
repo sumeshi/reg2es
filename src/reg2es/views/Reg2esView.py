@@ -110,7 +110,7 @@ class Reg2esView(BaseView):
 
 def entry_point():
     try:
-        Reg2esView().run()
+        BaseView.run_entry_point(Reg2esView)
     except Exception as exc:
         print(f"reg2es: {exc}", file=sys.stderr)
         raise SystemExit(1) from None

@@ -107,8 +107,6 @@ venv.bak/
 *.DAT
 *.reg
 
-!.devcontainer/devcontainer.json
-
 AGENTS.md
 .serena
 .tokensave

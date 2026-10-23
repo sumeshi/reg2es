@@ -336,8 +336,8 @@ def test_timestamp_survives_json_exports_and_es_bulk(
         return len(captured), []
 
     monkeypatch.setattr(es_module, "bulk", bulk)
-    client = es_module.ElasticsearchUtils.__new__(es_module.ElasticsearchUtils)
-    client.es = object()
+    monkeypatch.setattr(es_module, "Elasticsearch", lambda **_kwargs: object())
+    client = es_module.ElasticsearchUtils("localhost", 9200, "http", "", "")
     assert client.bulk_indice([expected], "registry") == (1, [])
     assert exported == captured[0]["_source"] == expected
 

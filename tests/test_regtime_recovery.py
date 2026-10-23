@@ -52,7 +52,7 @@ def test_bad_key_record_does_not_hide_readable_descendants(
     assert runner.successful_records == 3
     assert runner.failed_records == 1
     assert runner.errors == [{
-        "plugin": "regtime", "hive": "SYSTEM", "hive_path": "/case/SYSTEM",
+        "plugin": "regtime", "hive": "SYSTEM", "hive_path": str(Path("/case/SYSTEM")),
         "key": "\\ROOT\\Bad", "value": None,
         "error": f"{type(failure).__name__}: {failure}",
         "stage": "metadata",
