@@ -51,11 +51,16 @@ class Plugin(BasePlugin):
                         if isinstance(raw_time, (bytes, bytearray))
                         else raw_time
                     )
-                    res.mark_timestamp_fallback("invalid_typedurls_time")
-                    self.warning(
-                        f"plugin=typedurls hive={self.hive_name} path={self.hive_path} "
-                        f"invalid TypedURLsTime for {v.name()}"
+                    res.mark_timestamp_fallback(
+                        "typedurls_time_missing"
+                        if raw_time == b"\0" * 8
+                        else "invalid_typedurls_time"
                     )
+                    if raw_time != b"\0" * 8:
+                        self.warning(
+                            f"plugin=typedurls hive={self.hive_name} path={self.hive_path} "
+                            f"invalid TypedURLsTime for {v.name()}"
+                        )
             else:
                 res.mark_timestamp_fallback("typedurls_time_missing")
             yield res

@@ -12,9 +12,8 @@ from reg2es.plugins import BasePlugin, PluginResult, filetime_to_datetime
 # avoid misreading an unrelated typed value as a RID.
 STANDARD_REGISTRY_TYPES = frozenset(range(12))
 
-# The checked real-hive fixture uses this fixed layout.  Do not interpret
-# partial records or other revisions using its offsets without verification.
-SUPPORTED_F_REVISION = 3
+# Verified revision 2 and 3 hives share this fixed layout.
+SUPPORTED_F_REVISIONS = (2, 3)
 SUPPORTED_F_SIZE = 80
 
 
@@ -25,7 +24,7 @@ def _f_validation_error(data, rid):
         return "sam_user_f_truncated"
     if len(data) != SUPPORTED_F_SIZE:
         return "sam_user_f_unsupported_size"
-    if int.from_bytes(data[:2], "little") != SUPPORTED_F_REVISION:
+    if int.from_bytes(data[:2], "little") not in SUPPORTED_F_REVISIONS:
         return "sam_user_f_unsupported_revision"
     if int.from_bytes(data[48:52], "little") != rid:
         return "sam_user_rid_mismatch"

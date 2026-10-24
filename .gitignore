@@ -107,9 +107,10 @@ venv.bak/
 *.DAT
 *.reg
 
+GOAL.md
+TASKS.md
 AGENTS.md
 .serena
 .tokensave
-TASKS.md
 sample
 arts

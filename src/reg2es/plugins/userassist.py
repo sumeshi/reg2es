@@ -36,6 +36,13 @@ class Plugin(BasePlugin):
             count_key = subkey.subkey("Count")
             for entry in count_key.values():
                 res = PluginResult(key=count_key, value=entry)
+                name = codecs.encode(entry.name(), "rot13")
+                # Internal counters have no program execution time or statistics.
+                if name in ("UEME_CTLSESSION", "UEME_CTLCUACount:ctor"):
+                    res.custom["userassist"] = {"name": name}
+                    res.mark_timestamp_fallback("userassist_internal_record")
+                    yield res
+                    continue
                 ua = UAObject(entry.name(), entry.value())
                 res.custom["userassist"] = ua
                 raw_offset = 8 if len(ua._raw) == UAObject.LENGTH_WINXP else 60
@@ -61,6 +68,8 @@ class Plugin(BasePlugin):
                         precision="microseconds",
                         raw=parsed_time[1],
                     )
+                elif raw_filetime == 0:
+                    res.mark_timestamp_fallback("userassist_time_missing")
                 else:
                     res.mark_timestamp_fallback("invalid_or_missing_userassist_time")
                     self.warning(

@@ -81,6 +81,105 @@ def test_typedurls_uses_sibling_key_case_insensitive_value_matching():
     orjson.dumps(doc)
 
 
+@pytest.mark.parametrize(
+    "raw,reason",
+    [
+        (b"\0" * 8, "typedurls_time_missing"),
+        (bytearray(8), "typedurls_time_missing"),
+        (b"short", "invalid_typedurls_time"),
+        (b"\xff" * 8, "invalid_typedurls_time"),
+    ],
+)
+def test_typedurls_missing_time_is_quiet_but_corrupt_time_warns(raw, reason, caplog):
+    key = RegistryKeyMock.build(r"Software\Microsoft\Internet Explorer\TypedURLs")
+    parent = key.root().open(r"Software\Microsoft\Internet Explorer")
+    times = RegistryKeyMock("TypedURLsTime", parent)
+    parent.add_child(times)
+    key.add_value(RegistryValueMock("url1", "https://example.org", RegSZ))
+    times.add_value(RegistryValueMock("url1", raw, RegBin))
+    registry = RegistryMock("NTUSER.DAT", "ntuser", key.root())
+
+    results = list(
+        TypedURLsPlugin(registry, logging.getLogger(__name__), "NTUSER.DAT", "-").run()
+    )
+
+    assert len(results) == 1
+    doc = document(results[0], "typedurls", "NTUSER.DAT")
+    assert doc["reg2es"]["timestamp"]["source"] == "key.last_write"
+    assert doc["reg2es"]["timestamp"]["fallback_reason"] == reason
+    assert doc["reg2es"]["custom"]["typedurls_time_raw"] == raw.hex()
+    assert doc["reg2es"]["value_data"] == "https://example.org"
+    assert bool(caplog.records) == (reason == "invalid_typedurls_time")
+
+
+@pytest.mark.parametrize(
+    "length,offset,raw_time",
+    [
+        (16, 8, 0),
+        (72, 60, 0),
+        (16, 8, 2**63 - 1),
+        (72, 60, 2**63 - 1),
+        (68, 60, FILETIME),
+    ],
+)
+def test_userassist_missing_time_is_quiet_but_corrupt_time_warns(
+    length, offset, raw_time, caplog
+):
+    key = RegistryKeyMock.build(
+        r"Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist\{CEBFF5CD-ACE2-4F4F-9178-9926F41749EA}\Count"
+    )
+    raw = bytearray(length)
+    struct.pack_into("<Q", raw, offset, raw_time)
+    key.add_value(RegistryValueMock("grfg.rkr", bytes(raw), RegBin))
+    registry = RegistryMock("NTUSER.DAT", "ntuser", key.root())
+
+    results = list(
+        UserAssistPlugin(registry, logging.getLogger(__name__), "NTUSER.DAT", "-").run()
+    )
+
+    assert len(results) == 1
+    doc = document(results[0], "userassist", "NTUSER.DAT")
+    assert doc["reg2es"]["timestamp"]["source"] == "key.last_write"
+    assert doc["reg2es"]["timestamp"]["fallback_reason"] == (
+        "userassist_time_missing"
+        if raw_time == 0
+        else "invalid_or_missing_userassist_time"
+    )
+    assert doc["reg2es"]["value_data"] == raw.hex()
+    assert bool(caplog.records) == (raw_time != 0)
+
+
+@pytest.mark.parametrize(
+    "encoded_name,name,length",
+    [
+        ("HRZR_PGYFRFFVBA", "UEME_CTLSESSION", 1612),
+        ("HRZR_PGYPHNPbhag:pgbe", "UEME_CTLCUACount:ctor", 72),
+    ],
+)
+def test_userassist_internal_records_keep_raw_without_execution_statistics(
+    encoded_name, name, length, caplog
+):
+    key = RegistryKeyMock.build(
+        r"Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist\{CEBFF5CD-ACE2-4F4F-9178-9926F41749EA}\Count"
+    )
+    raw = bytearray(length)
+    struct.pack_into("<Q", raw, 60, FILETIME)
+    key.add_value(RegistryValueMock(encoded_name, bytes(raw), RegBin))
+    registry = RegistryMock("NTUSER.DAT", "ntuser", key.root())
+
+    results = list(
+        UserAssistPlugin(registry, logging.getLogger(__name__), "NTUSER.DAT", "-").run()
+    )
+
+    assert len(results) == 1
+    doc = document(results[0], "userassist", "NTUSER.DAT")
+    assert doc["reg2es"]["timestamp"]["source"] == "key.last_write"
+    assert doc["reg2es"]["timestamp"]["fallback_reason"] == "userassist_internal_record"
+    assert doc["reg2es"]["custom"]["userassist"] == {"name": name}
+    assert doc["reg2es"]["value_data"] == raw.hex()
+    assert not caplog.records
+
+
 def sam_results(data):
     user = RegistryKeyMock.build(r"SAM\Domains\Account\Users\Names\Alice")
     user.add_value(RegistryValueMock("", b"", 500))
@@ -104,11 +203,18 @@ def sam_f_data(*, revision=3, rid=500, length=80):
     return bytes(data)
 
 
-def test_sam_rid_is_value_type_and_expiry_sentinel_does_not_drop_user():
-    results = sam_results(sam_f_data())
+@pytest.mark.parametrize("revision", [2, 3])
+def test_sam_rid_is_value_type_and_expiry_sentinel_does_not_drop_user(revision, caplog):
+    raw = sam_f_data(revision=revision)
+    results = sam_results(raw)
     assert len(results) == 1
     doc = document(results[0], "localusers", "SAM")
     assert doc["@timestamp"] == "2024-01-01T00:00:00.123456Z"
+    assert doc["reg2es"]["timestamp"]["source"] == "SAM.Users.F.last_login"
+    assert doc["reg2es"]["custom"]["sam_user"]["password_reset"] == FILETIME
+    assert doc["reg2es"]["custom"]["sam_user"]["account_expiry"] is None
+    assert doc["reg2es"]["custom"]["sam_user"]["f_raw"] == raw.hex()
+    assert not caplog.records
     orjson.dumps(doc)
 
 
@@ -118,7 +224,7 @@ def test_sam_rid_is_value_type_and_expiry_sentinel_does_not_drop_user():
         ({"length": 52}, "sam_user_f_truncated"),
         ({"length": 79}, "sam_user_f_truncated"),
         ({"length": 81}, "sam_user_f_unsupported_size"),
-        ({"revision": 2}, "sam_user_f_unsupported_revision"),
+        ({"revision": 1}, "sam_user_f_unsupported_revision"),
         ({"revision": 0xFFFF}, "sam_user_f_unsupported_revision"),
         ({"rid": 501}, "sam_user_rid_mismatch"),
     ],
