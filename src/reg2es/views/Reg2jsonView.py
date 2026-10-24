@@ -122,7 +122,7 @@ class Reg2jsonView(BaseView):
 
 def entry_point():
     try:
-        Reg2jsonView().run()
+        BaseView.run_entry_point(Reg2jsonView)
     except Exception as exc:
         if isinstance(exc, PartialExtractionError):
             for diagnostic in exc.diagnostics:
