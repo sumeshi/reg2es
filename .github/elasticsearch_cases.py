@@ -1,10 +1,9 @@
-"""Raw Registry source values remain safe with real mappings and aliases."""
+"""Raw Registry values use user-defined mappings and report Bulk conflicts."""
 
 from copy import deepcopy
 
-import pytest
-
 RAW_MAPPING = {"type": "object", "enabled": False}
+MAPPINGS = {"properties": {"reg2es": {"properties": {"value_data": RAW_MAPPING}}}}
 
 
 def expected_source(document):
@@ -55,7 +54,8 @@ def run_extra_cases(client, transport, new_index, stored_documents, document_id)
     ):
         original = deepcopy(records)
         index = new_index(label)
-        # Separate first-value writes check both dynamic-mapping insertion orders.
+        client.indices.create(index=index, mappings=MAPPINGS)
+        # Separate writes exercise both insertion orders with a predefined mapping.
         assert transport.bulk_indice(records[:1], index) == (1, [])
         assert transport.bulk_indice(records[1:], index) == (len(records) - 1, [])
         assert stored_documents(client, index) == {
@@ -80,13 +80,29 @@ def run_extra_cases(client, transport, new_index, stored_documents, document_id)
     )
     sentinel = {"reg2es": {"value_data": 7}, "marker": "keep"}
     client.index(index=conflicting, id="sentinel", document=sentinel, refresh=True)
-    with pytest.raises(Exception, match="incompatible reg2es.value_data"):
-        transport.bulk_indice(documents, conflicting)
-    assert stored_documents(client, conflicting) == {"sentinel": sentinel}
+    records = [
+        {"reg2es": {"value_data": 8}},
+        {"reg2es": {"value_data": "not-an-integer"}},
+        {"reg2es": {"value_data": {"nested": [1, "two"]}}},
+    ]
+    original = deepcopy(records)
+    success, failures = transport.bulk_indice(records, conflicting)
+    assert success == 1 and len(failures) == 2
+    assert {item["index"]["_id"] for item in failures} == {
+        document_id(record) for record in records[1:]
+    }
+    assert all(item["index"]["status"] == 400 for item in failures)
+    assert all(item["index"]["error"]["reason"] for item in failures)
+    assert records == original
+    expected_conflicting = {
+        "sentinel": sentinel,
+        document_id(records[0]): records[0],
+    }
+    assert stored_documents(client, conflicting) == expected_conflicting
     assert raw_mapping(client, conflicting) == {"type": "long"}
 
     write_index = new_index("alias-write")
-    client.indices.create(index=write_index)
+    client.indices.create(index=write_index, mappings=MAPPINGS)
     alias = write_index + "-alias"
     client.indices.update_aliases(
         actions=[
@@ -100,4 +116,4 @@ def run_extra_cases(client, transport, new_index, stored_documents, document_id)
     }
     assert raw_mapping(client, write_index) == RAW_MAPPING
     assert raw_mapping(client, conflicting) == {"type": "long"}
-    assert stored_documents(client, conflicting) == {"sentinel": sentinel}
+    assert stored_documents(client, conflicting) == expected_conflicting

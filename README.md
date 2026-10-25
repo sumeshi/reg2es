@@ -103,6 +103,13 @@ With Elasticsearch authentication:
 reg2es SYSTEM --login elastic --pwd '******'
 ```
 
+reg2es sends documents through the Bulk API and does not inspect or manage
+indices or mappings. Define mappings before importing as needed.
+`reg2es.value_data` preserves the original value and may contain mixed types.
+To retain it in `_source` without indexing it, predefine the field as
+`{"type": "object", "enabled": false}`. Mapping conflicts are reported as Bulk
+errors and stop the import.
+
 
 ## Appendix
 
