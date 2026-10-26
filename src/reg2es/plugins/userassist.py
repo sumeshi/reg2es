@@ -1,6 +1,7 @@
 # This file is derived from regrippy (https://github.com/airbus-cert/regrippy)
 # commit 32e3ab3243415b7bf46f812d933f4d29862e3046 (v2.0.3), licensed under Apache-2.0.
-# Modifications: imports adapted to reg2es.plugins; unused CLI display helpers removed.
+# Modifications: imports adapted to reg2es.plugins; unused CLI display helpers
+# removed; per-value and Count failures reported while recovering later entries.
 
 import codecs
 import re
@@ -30,52 +31,71 @@ class Plugin(BasePlugin):
             return
 
         for subkey in key.subkeys():
-            if subkey.name() not in GUIDS:
+            key_path = "<unreadable>"
+            try:
+                if subkey.name() not in GUIDS:
+                    continue
+                key_path = subkey.path() + "\\Count"
+                count_key = subkey.subkey("Count")
+                entries = count_key.values()
+            except Exception as exc:
+                self.record_error(key_path, None, exc, stage="values")
                 continue
 
-            count_key = subkey.subkey("Count")
-            for entry in count_key.values():
-                res = PluginResult(key=count_key, value=entry)
-                name = codecs.encode(entry.name(), "rot13")
-                # Internal counters have no program execution time or statistics.
-                if name in ("UEME_CTLSESSION", "UEME_CTLCUACount:ctor"):
-                    res.custom["userassist"] = {"name": name}
-                    res.mark_timestamp_fallback("userassist_internal_record")
-                    yield res
+            for entry in entries:
+                value_name = None
+                try:
+                    value_name = entry.name()
+                    res = PluginResult(key=count_key, value=entry)
+                    name = codecs.encode(value_name, "rot13")
+                    # Internal counters have no program execution statistics.
+                    if name in ("UEME_CTLSESSION", "UEME_CTLCUACount:ctor"):
+                        res.custom["userassist"] = {"name": name}
+                        res.mark_timestamp_fallback("userassist_internal_record")
+                    else:
+                        ua = UAObject(value_name, entry.value())
+                        res.custom["userassist"] = ua
+                        raw_offset = (
+                            8 if len(ua._raw) == UAObject.LENGTH_WINXP else 60
+                        )
+                        raw_filetime = (
+                            int.from_bytes(
+                                ua._raw[raw_offset : raw_offset + 8],
+                                byteorder="little",
+                                signed=False,
+                            )
+                            if len(ua._raw) in (
+                                UAObject.LENGTH_WINXP, UAObject.LENGTH_WIN7
+                            )
+                            else None
+                        )
+                        parsed_time = (
+                            filetime_to_datetime(raw_filetime)
+                            if raw_filetime is not None
+                            else None
+                        )
+                        if parsed_time is not None:
+                            res.set_event_time(
+                                parsed_time[0],
+                                source="UAObject.last_exec",
+                                meaning="program_execution",
+                                precision="microseconds",
+                                raw=parsed_time[1],
+                            )
+                        elif raw_filetime == 0:
+                            res.mark_timestamp_fallback("userassist_time_missing")
+                        else:
+                            res.mark_timestamp_fallback(
+                                "invalid_or_missing_userassist_time"
+                            )
+                            self.warning(
+                                f"plugin=userassist hive={self.hive_name} "
+                                f"path={self.hive_path} "
+                                f"invalid or missing UserAssist time for {value_name}"
+                            )
+                except Exception as exc:
+                    self.record_error(key_path, value_name, exc, stage="record")
                     continue
-                ua = UAObject(entry.name(), entry.value())
-                res.custom["userassist"] = ua
-                raw_offset = 8 if len(ua._raw) == UAObject.LENGTH_WINXP else 60
-                raw_filetime = (
-                    int.from_bytes(
-                        ua._raw[raw_offset : raw_offset + 8],
-                        byteorder="little",
-                        signed=False,
-                    )
-                    if len(ua._raw) in (UAObject.LENGTH_WINXP, UAObject.LENGTH_WIN7)
-                    else None
-                )
-                parsed_time = (
-                    filetime_to_datetime(raw_filetime)
-                    if raw_filetime is not None
-                    else None
-                )
-                if parsed_time is not None:
-                    res.set_event_time(
-                        parsed_time[0],
-                        source="UAObject.last_exec",
-                        meaning="program_execution",
-                        precision="microseconds",
-                        raw=parsed_time[1],
-                    )
-                elif raw_filetime == 0:
-                    res.mark_timestamp_fallback("userassist_time_missing")
-                else:
-                    res.mark_timestamp_fallback("invalid_or_missing_userassist_time")
-                    self.warning(
-                        f"plugin=userassist hive={self.hive_name} path={self.hive_path} "
-                        f"invalid or missing UserAssist time for {entry.name()}"
-                    )
                 yield res
 
 
