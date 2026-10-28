@@ -1,6 +1,10 @@
 """Raw Registry values use user-defined mappings and report Bulk conflicts."""
 
 from copy import deepcopy
+from pathlib import Path
+import runpy
+import struct
+from tempfile import TemporaryDirectory
 
 RAW_MAPPING = {"type": "object", "enabled": False}
 MAPPINGS = {"properties": {"reg2es": {"properties": {"value_data": RAW_MAPPING}}}}
@@ -117,3 +121,154 @@ def run_extra_cases(client, transport, new_index, stored_documents, document_id)
     assert raw_mapping(client, write_index) == RAW_MAPPING
     assert raw_mapping(client, conflicting) == {"type": "long"}
     assert stored_documents(client, conflicting) == expected_conflicting
+
+    run_native_time_cases(client, transport, new_index, stored_documents, document_id)
+
+
+def native_time_documents():
+    """Read plugin time fields through actual python-registry, retaining raw values."""
+    from reg2es import reg2json
+
+    artifact = runpy.run_path(str(Path(__file__).with_name("artifact_fixture.py")))
+    shutdown, userassist = [], []
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        for label, filetime in (
+            ("valid", artifact["FILETIME"]),
+            ("zero", 0),
+            ("invalid", 2**64 - 1),
+        ):
+            destination = root / label / "SYSTEM"
+            destination.parent.mkdir()
+            tree = [
+                ("Select", [], [("Current", 4, struct.pack("<I", 1))]),
+                (
+                    "ControlSet001",
+                    [
+                        (
+                            "Control",
+                            [
+                                (
+                                    "Windows",
+                                    [],
+                                    [("ShutdownTime", 3, struct.pack("<Q", filetime))],
+                                )
+                            ],
+                            [],
+                        )
+                    ],
+                    [],
+                ),
+            ]
+            destination.write_bytes(artifact["make_hive"](tree=tree))
+            records = reg2json(str(destination), plugin_names=["lastshutdown"])
+            assert len(records) == 1
+            assert (
+                records[0]["reg2es"]["value_data"] == struct.pack("<Q", filetime).hex()
+            )
+            shutdown.extend(records)
+
+        values = []
+        for index, milliseconds in enumerate((60000, 1234, 0)):
+            raw = bytearray(72)
+            struct.pack_into("<III", raw, 4, 1, 1, milliseconds)
+            struct.pack_into("<Q", raw, 60, artifact["FILETIME"])
+            values.append((f"rknzcyr{index}.rkr", 3, bytes(raw)))
+        tree = [("Count", [], values)]
+        for name in reversed(
+            [
+                "Software",
+                "Microsoft",
+                "Windows",
+                "CurrentVersion",
+                "Explorer",
+                "UserAssist",
+                "{CEBFF5CD-ACE2-4F4F-9178-9926F41749EA}",
+            ]
+        ):
+            tree = [(name, tree, [])]
+        destination = root / "NTUSER.DAT"
+        destination.write_bytes(artifact["make_hive"](tree=tree))
+        userassist = reg2json(str(destination), plugin_names=["userassist"])
+        assert len(userassist) == len(values)
+        assert [document["reg2es"]["value_data"] for document in userassist] == [
+            raw.hex() for _name, _kind, raw in values
+        ]
+    return shutdown, userassist
+
+
+def run_native_time_cases(client, transport, new_index, stored_documents, document_id):
+    shutdown, userassist = native_time_documents()
+    assert [record["reg2es"]["custom"]["LastShutdownTime"] for record in shutdown] == [
+        "2024-01-01T00:00:00.123456Z",
+        None,
+        None,
+    ]
+    for record in shutdown[1:]:
+        assert (
+            record["reg2es"]["timestamp"]["fallback_reason"]
+            == "invalid_shutdowntime_filetime"
+        )
+    for label, records in (
+        ("date-first", shutdown),
+        ("null-first", shutdown[1:] + shutdown[:1]),
+    ):
+        original = deepcopy(records)
+        index = new_index(label)
+        client.indices.create(index=index, mappings=MAPPINGS)
+        # Separate Bulks exercise dynamic date detection in either arrival order.
+        assert transport.bulk_indice(records[:1], index) == (1, [])
+        assert transport.bulk_indice(records[1:], index) == (len(records) - 1, [])
+        assert records == original
+        assert stored_documents(client, index) == {
+            document_id(record): record for record in original
+        }
+        field = "reg2es.custom.LastShutdownTime"
+        properties = client.indices.get_mapping(index=index)[index]["mappings"][
+            "properties"
+        ]
+        assert (
+            properties["reg2es"]["properties"]["custom"]["properties"][
+                "LastShutdownTime"
+            ]["type"]
+            == "date"
+        )
+        assert (
+            client.count(index=index, query={"exists": {"field": field}})["count"] == 1
+        )
+        assert (
+            client.count(
+                index=index,
+                query={"range": {field: {"gte": "2024-01-01", "lt": "2024-01-02"}}},
+            )["count"]
+            == 1
+        )
+
+    assert [
+        record["reg2es"]["custom"]["userassist"]["focus_time_secs"]
+        for record in userassist
+    ] == [60.0, 1.234, 0.0]
+    mappings = deepcopy(MAPPINGS)
+    mappings["properties"]["reg2es"]["properties"]["custom"] = {
+        "properties": {
+            "userassist": {"properties": {"focus_time_secs": {"type": "double"}}}
+        }
+    }
+    index = new_index("userassist-seconds")
+    # The operator owns this mapping; the transport only uses Bulk.
+    client.indices.create(index=index, mappings=mappings)
+    original = deepcopy(userassist)
+    assert transport.bulk_indice(userassist, index) == (len(userassist), [])
+    assert userassist == original
+    assert stored_documents(client, index) == {
+        document_id(record): record for record in original
+    }
+    field = "reg2es.custom.userassist.focus_time_secs"
+    for seconds in (60.0, 1.234, 0.0):
+        assert client.count(index=index, query={"term": {field: seconds}})["count"] == 1
+    assert (
+        client.count(index=index, query={"range": {field: {"gt": 1.233, "lt": 1.235}}})[
+            "count"
+        ]
+        == 1
+    )

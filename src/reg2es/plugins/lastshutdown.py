@@ -35,7 +35,7 @@ class Plugin(BasePlugin):
                         raw=binary,
                     )
                 except (TypeError, ValueError, OverflowError) as exc:
-                    res.custom["LastShutdownTime"] = "N/A"
+                    res.custom["LastShutdownTime"] = None
                     res.mark_timestamp_fallback("invalid_shutdowntime_filetime")
                     self.warning(
                         f"plugin=lastshutdown hive={self.hive_name} path={self.hive_path} "

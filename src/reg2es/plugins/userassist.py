@@ -1,7 +1,8 @@
 # This file is derived from regrippy (https://github.com/airbus-cert/regrippy)
 # commit 32e3ab3243415b7bf46f812d933f4d29862e3046 (v2.0.3), licensed under Apache-2.0.
 # Modifications: imports adapted to reg2es.plugins; unused CLI display helpers
-# removed; per-value and Count failures reported while recovering later entries.
+# removed; per-value and Count failures reported while recovering later entries;
+# focus duration converted from milliseconds to seconds.
 
 import codecs
 import re
@@ -130,7 +131,8 @@ class UAObject(object):
         if len(self._raw) == UAObject.LENGTH_WINXP:
             return 0
 
-        return int.from_bytes(self._raw[12:16], byteorder="little")
+        # Windows 7+ stores focus duration in milliseconds.
+        return int.from_bytes(self._raw[12:16], byteorder="little") / 1000
 
     def _read_last_exec(self):
         if len(self._raw) not in (UAObject.LENGTH_WINXP, UAObject.LENGTH_WIN7):
