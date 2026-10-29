@@ -1,10 +1,12 @@
 """Raw Registry values use user-defined mappings and report Bulk conflicts."""
 
 from copy import deepcopy
+import os
 from pathlib import Path
 import runpy
 import struct
 from tempfile import TemporaryDirectory
+from urllib.parse import unquote, urlsplit
 
 RAW_MAPPING = {"type": "object", "enabled": False}
 MAPPINGS = {"properties": {"reg2es": {"properties": {"value_data": RAW_MAPPING}}}}
@@ -123,6 +125,83 @@ def run_extra_cases(client, transport, new_index, stored_documents, document_id)
     assert stored_documents(client, conflicting) == expected_conflicting
 
     run_native_time_cases(client, transport, new_index, stored_documents, document_id)
+    run_native_run_case(client, new_index, stored_documents, document_id)
+
+
+def native_run_recovery(directory):
+    """Recover healthy startup values around a native Registry decoding error."""
+    from reg2es import PartialExtractionError, reg2json
+
+    artifact = runpy.run_path(str(Path(__file__).with_name("artifact_fixture.py")))
+    tree = [
+        (
+            "Run",
+            [],
+            [
+                ("a", 1, "first.exe\0".encode("utf-16le")),
+                ("b", 7, b"a\0b\0c"),
+                ("c", 1, "last.exe\0".encode("utf-16le")),
+            ],
+        ),
+        ("RunOnce", [], [("d", 1, "later.exe\0".encode("utf-16le"))]),
+    ]
+    for name in reversed(r"Software\Microsoft\Windows\CurrentVersion".split("\\")):
+        tree = [(name, tree, [])]
+    source = directory / "NTUSER.DAT"
+    source.write_bytes(artifact["make_hive"](tree=tree))
+    try:
+        reg2json(source, plugin_names=["run"], chunk_size=1)
+    except PartialExtractionError as error:
+        recovered, diagnostics = error.records, error.diagnostics
+    else:
+        raise AssertionError("An unreadable Run value must report partial extraction")
+    assert [record["registry"]["value"] for record in recovered] == ["a", "c", "d"]
+    assert len(diagnostics) == 1
+    assert diagnostics[0]["value"] == "b"
+    assert (
+        diagnostics[0]["key"] == r"ROOT\Software\Microsoft\Windows\CurrentVersion\Run"
+    )
+    assert diagnostics[0]["stage"] == "record"
+    assert diagnostics[0]["error"].startswith("UnicodeDecodeError:")
+    return source, recovered, diagnostics
+
+
+def run_native_run_case(client, new_index, stored_documents, document_id):
+    from reg2es import PartialExtractionError, reg2es
+
+    address = urlsplit(os.environ["ELASTICSEARCH_URL"])
+    with TemporaryDirectory() as directory:
+        source, recovered, diagnostics = native_run_recovery(Path(directory))
+        index = new_index("run-recovery")
+        # The caller defines raw-value mapping; the public API only sends Bulk.
+        client.indices.create(index=index, mappings=MAPPINGS)
+        try:
+            reg2es(
+                source,
+                host=address.hostname,
+                port=address.port or (443 if address.scheme == "https" else 80),
+                scheme=address.scheme,
+                login=unquote(address.username or ""),
+                pwd=unquote(address.password or ""),
+                index=index,
+                plugin_names=["run"],
+                chunk_size=1,
+            )
+        except PartialExtractionError as error:
+            assert error.diagnostics == diagnostics
+        else:
+            raise AssertionError("ES ingestion must also report partial extraction")
+        assert stored_documents(client, index) == {
+            document_id(record): record for record in recovered
+        }
+        for name in ("a", "c", "d"):
+            assert (
+                client.count(
+                    index=index, query={"term": {"registry.value.keyword": name}}
+                )["count"]
+                == 1
+            )
+        assert raw_mapping(client, index) == RAW_MAPPING
 
 
 def native_time_documents():

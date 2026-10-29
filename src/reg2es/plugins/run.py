@@ -1,6 +1,7 @@
 # This file is derived from regrippy (https://github.com/airbus-cert/regrippy)
 # commit 32e3ab3243415b7bf46f812d933f4d29862e3046 (v2.0.3), licensed under Apache-2.0.
-# Modifications: imports adapted to reg2es.plugins; unused CLI display helpers removed.
+# Modifications: imports adapted to reg2es.plugins; unused CLI display helpers
+# removed; report individual value failures while recovering later entries.
 
 from reg2es.plugins import BasePlugin, PluginResult
 
@@ -25,10 +26,22 @@ class Plugin(BasePlugin):
             ]
 
         for path in paths:
-            key = self.open_key(path)
-            if not key:
+            try:
+                key = self.open_key(path)
+                if not key:
+                    continue
+                path = key.path()
+                values = key.values()
+            except Exception as exc:
+                self.record_error(path, None, exc, stage="values")
                 continue
 
-            for v in key.values():
-                res = PluginResult(key=key, value=v)
+            for value in values:
+                name = None
+                try:
+                    name = value.name()
+                    res = PluginResult(key=key, value=value)
+                except Exception as exc:
+                    self.record_error(path, name, exc, stage="record")
+                    continue
                 yield res
