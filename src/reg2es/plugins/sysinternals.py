@@ -11,16 +11,19 @@ class Plugin(BasePlugin):
     __REGHIVE__ = "NTUSER.DAT"
 
     def run(self):
-        key = self.open_key(r"Software\Sysinternals")
-        if not key:
-            return
+        path = "Software\\Sysinternals"
+        with self.recover(path, stage="subkeys"):
+            key = self.open_key(r"Software\Sysinternals")
+            if not key:
+                return
 
-        for subkey in key.subkeys():
-            eula = None
-            for v in subkey.values():
-                if v.name() == "EulaAccepted":
-                    eula = v
-                    break
+            for subkey in key.subkeys():
+                with self.recover(subkey):
+                    eula = None
+                    for v in subkey.values():
+                        if v.name() == "EulaAccepted":
+                            eula = v
+                            break
 
-            res = PluginResult(key=subkey, value=eula)
-            yield res
+                    res = PluginResult(key=subkey, value=eula)
+                    yield res

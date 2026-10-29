@@ -13,25 +13,19 @@ class Plugin(BasePlugin):
 
     def run(self):
         path = r"Microsoft\Windows NT\CurrentVersion\ProfileList"
-        key = self.open_key(path)
-        if not key:
-            return
+        with self.recover(path, stage="subkeys"):
+            key = self.open_key(path)
+            if not key:
+                return
 
-        sid_list = list()
-
-        for v in key.subkeys():
-            sid_list.append(v.name())
-
-        for sid in sid_list:
-            sid_path = path + "\\" + sid
-            key2 = self.open_key(sid_path)
-
-            if not key2:
-                continue
-
-            for entry in key2.values():
-                if entry.name() == "ProfileImagePath":
-                    res = PluginResult(key=key2, value=entry)
-                    user_name = entry.value().split("\\")[-1]
-                    res.custom["value"] = "{}:\t{}".format(user_name, key2.name())
-                    yield res
+            for key2 in key.subkeys():
+                with self.recover(key2, stage="values"):
+                    for entry in key2.values():
+                        with self.recover(key2, entry):
+                            if entry.name() == "ProfileImagePath":
+                                res = PluginResult(key=key2, value=entry)
+                                user_name = entry.value().split("\\")[-1]
+                                res.custom["value"] = "{}:\t{}".format(
+                                    user_name, key2.name()
+                                )
+                                yield res

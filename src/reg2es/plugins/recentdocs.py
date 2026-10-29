@@ -12,36 +12,39 @@ class Plugin(BasePlugin):
     __REGHIVE__ = "NTUSER.DAT"
 
     def run(self):
-        key = self.open_key(
-            r"Software\Microsoft\Windows\CurrentVersion\Explorer\RecentDocs"
-        )
-        if not key:
-            return
-
-        for v in key.values():
-            if v.name() == "MRUListEx":
-                continue
-
-            binary = v.value()
-            offset_str_end = next(
-                (
-                    offset
-                    for offset in range(0, len(binary) - 1, 2)
-                    if binary[offset : offset + 2] == b"\x00\x00"
-                ),
-                None,
+        path = "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\RecentDocs"
+        with self.recover(path, stage="values"):
+            key = self.open_key(
+                r"Software\Microsoft\Windows\CurrentVersion\Explorer\RecentDocs"
             )
-            if offset_str_end is None:
-                # Some hives contain a truncated terminator. Preserve the
-                # upstream parser's tolerance while keeping an even length.
-                fallback_end = binary.find(b"\x00\x00")
-                offset_str_end = (
-                    len(binary)
-                    if fallback_end < 0
-                    else fallback_end + (fallback_end % 2)
-                )
-            docname = binary[:offset_str_end].decode("utf-16le", "replace")
+            if not key:
+                return
 
-            res = PluginResult(key=key, value=v)
-            res.custom["docname"] = docname
-            yield res
+            for v in key.values():
+                with self.recover(key, v):
+                    if v.name() == "MRUListEx":
+                        continue
+
+                    binary = v.value()
+                    offset_str_end = next(
+                        (
+                            offset
+                            for offset in range(0, len(binary) - 1, 2)
+                            if binary[offset : offset + 2] == b"\x00\x00"
+                        ),
+                        None,
+                    )
+                    if offset_str_end is None:
+                        # Some hives contain a truncated terminator. Preserve the
+                        # upstream parser's tolerance while keeping an even length.
+                        fallback_end = binary.find(b"\x00\x00")
+                        offset_str_end = (
+                            len(binary)
+                            if fallback_end < 0
+                            else fallback_end + (fallback_end % 2)
+                        )
+                    docname = binary[:offset_str_end].decode("utf-16le", "replace")
+
+                    res = PluginResult(key=key, value=v)
+                    res.custom["docname"] = docname
+                    yield res

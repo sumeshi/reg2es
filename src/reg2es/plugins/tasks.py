@@ -29,124 +29,157 @@ class Plugin(BasePlugin):
     __REGHIVE__ = "SOFTWARE"
 
     def run(self):
-        k = self.open_key(r"Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache")
-        if not k:
-            return
+        with self.recover(
+            r"Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache", stage="subkeys"
+        ):
+            k = self.open_key(r"Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache")
+            if not k:
+                return
 
-        version_k = self.open_key(r"Microsoft\Windows NT\CurrentVersion")
-        if not version_k:
-            return
+            version_k = self.open_key(r"Microsoft\Windows NT\CurrentVersion")
+            if not version_k:
+                return
 
-        current_build = int(version_k.value("CurrentBuild").value())
-        task_prefix = "%WINDIR%"
-        if current_build >= 6002:
-            # Since Windows Vista (Task Scheduler 2.0), tasks are stored in %System32%
-            task_prefix = "%System32%"
+            current_build = int(version_k.value("CurrentBuild").value())
+            task_prefix = "%WINDIR%"
+            if current_build >= 6002:
+                # Since Windows Vista (Task Scheduler 2.0), tasks are stored in %System32%
+                task_prefix = "%System32%"
 
-        boot_guids = []
-        logon_guids = []
-        maintenance_guids = []
-        plain_guids = []
+            boot_guids = []
+            logon_guids = []
+            maintenance_guids = []
+            plain_guids = []
 
-        for t in ["Boot", "Logon", "Maintenance", "Plain"]:
-            if t not in [x.name() for x in k.subkeys()]:
-                continue
-            for guid in k.subkey(t).subkeys():
-                g = guid.name()
-                if t == "Boot":
-                    boot_guids.append(g)
-                elif t == "Logon":
-                    logon_guids.append(g)
-                elif t == "Maintenance":
-                    maintenance_guids.append(g)
-                elif t == "Plain":
-                    plain_guids.append(g)
+            for t in ["Boot", "Logon", "Maintenance", "Plain"]:
+                with self.recover(k, t, stage="subkeys"):
+                    if t not in [x.name() for x in k.subkeys()]:
+                        continue
+                    for guid in k.subkey(t).subkeys():
+                        g = guid.name()
+                        if t == "Boot":
+                            boot_guids.append(g)
+                        elif t == "Logon":
+                            logon_guids.append(g)
+                        elif t == "Maintenance":
+                            maintenance_guids.append(g)
+                        elif t == "Plain":
+                            plain_guids.append(g)
 
-        for task in k.subkey("Tasks").subkeys():
-            guid = task.name()
-            runtype = "N/A"
-            if guid in boot_guids:
-                runtype = "Boot"
-            elif guid in logon_guids:
-                runtype = "Logon"
-            elif guid in maintenance_guids:
-                runtype = "Maintenance"
-            elif guid in plain_guids:
-                runtype = "Plain"
+            for task in k.subkey("Tasks").subkeys():
+                with self.recover(task):
+                    guid = task.name()
+                    runtype = "N/A"
+                    if guid in boot_guids:
+                        runtype = "Boot"
+                    elif guid in logon_guids:
+                        runtype = "Logon"
+                    elif guid in maintenance_guids:
+                        runtype = "Maintenance"
+                    elif guid in plain_guids:
+                        runtype = "Plain"
 
-            r = PluginResult(key=task)
-            task_values = [x.name() for x in task.values()]
-            r.custom = {
-                "RunType": runtype,
-                "Path": f"{task_prefix}\\Tasks{task.value('Path').value()}",
-                "Actions": (
-                    RegistryAction.from_binary(task.value("Actions").value())
-                    if "Actions" in task_values
-                    else RegistryAction(None, None)
-                ),
-                "Source": (
-                    task.value("Source").value() if "Source" in task_values else None
-                ),
-                "Author": (
-                    task.value("Author").value() if "Author" in task_values else None
-                ),
-                "Description": (
-                    task.value("Description").value()
-                    if "Description" in task_values
-                    else None
-                ),
-            }
-            dynamic = None
-            if "DynamicInfo" in task_values:
-                try:
-                    dynamic = task.value("DynamicInfo").value()
-                except Registry.RegistryValueNotFoundException:
+                    r = PluginResult(key=task)
+                    task_values = [x.name() for x in task.values()]
+                    actions = RegistryAction(None, None)
+                    actions_raw = None
+                    with self.recover(task, "Actions", stage="value"):
+                        if "Actions" in task_values:
+                            action_value = task.value("Actions")
+                            try:
+                                actions_raw = action_value.value()
+                            except Exception:
+                                try:
+                                    actions_raw = action_value.raw_data()
+                                except Exception:
+                                    pass
+                                raise
+                            actions = RegistryAction.from_binary(actions_raw)
+                            actions_raw = None
+                    r.custom = {
+                        "RunType": runtype,
+                        "Path": f"{task_prefix}\\Tasks{task.value('Path').value()}",
+                        "Actions": actions,
+                        "Source": self._optional_value(task, "Source", task_values),
+                        "Author": self._optional_value(task, "Author", task_values),
+                        "Description": self._optional_value(
+                            task, "Description", task_values
+                        ),
+                    }
+                    if actions_raw is not None:
+                        r.custom["Actions_raw"] = actions_raw
                     dynamic = None
-            # TaskCache DynamicInfo is documented as 28/36 bytes: creation at
-            # offset 4, last start at 12, and last stop at 28 for the 36-byte
-            # form.  Last start represents the latest execution when present;
-            # creation is the meaningful fallback for a never-run task.
-            start = _dynamic_filetime(dynamic, 12)
-            created = _dynamic_filetime(dynamic, 4)
-            stopped = (
-                _dynamic_filetime(dynamic, 28)
-                if isinstance(dynamic, (bytes, bytearray)) and len(dynamic) == 36
-                else None
-            )
-            r.custom["DynamicInfo"] = {
-                "raw": dynamic,
-                "length": (
-                    len(dynamic) if isinstance(dynamic, (bytes, bytearray)) else None
-                ),
-                "last_start": start[1] if start else None,
-                "created": created[1] if created else None,
-                "last_stop": stopped[1] if stopped else None,
-            }
-            if start:
-                r.set_event_time(
-                    start[0],
-                    source="TaskCache.DynamicInfo.last_start",
-                    meaning="scheduled_task_last_run",
-                    precision="microseconds",
-                    raw=start[1],
-                )
-            elif created:
-                r.set_event_time(
-                    created[0],
-                    source="TaskCache.DynamicInfo.created",
-                    meaning="scheduled_task_created",
-                    precision="microseconds",
-                    raw=created[1],
-                )
-            elif dynamic is None:
-                r.mark_timestamp_fallback("taskcache_dynamicinfo_missing")
-            else:
-                r.mark_timestamp_fallback("taskcache_dynamicinfo_invalid_filetime")
-                self.warning(
-                    f"plugin=tasks hive={self.hive_name} path={self.hive_path} "
-                    f"invalid DynamicInfo for {task.name()}"
-                )
-            yield r
+                    with self.recover(task, "DynamicInfo", stage="value"):
+                        if "DynamicInfo" in task_values:
+                            try:
+                                dynamic_value = task.value("DynamicInfo")
+                                try:
+                                    dynamic = dynamic_value.value()
+                                except Exception:
+                                    try:
+                                        dynamic = dynamic_value.raw_data()
+                                    except Exception:
+                                        pass
+                                    raise
+                            except Registry.RegistryValueNotFoundException:
+                                dynamic = None
+                    # TaskCache DynamicInfo is documented as 28/36 bytes: creation at
+                    # offset 4, last start at 12, and last stop at 28 for the 36-byte
+                    # form.  Last start represents the latest execution when present;
+                    # creation is the meaningful fallback for a never-run task.
+                    start = _dynamic_filetime(dynamic, 12)
+                    created = _dynamic_filetime(dynamic, 4)
+                    stopped = (
+                        _dynamic_filetime(dynamic, 28)
+                        if isinstance(dynamic, (bytes, bytearray))
+                        and len(dynamic) == 36
+                        else None
+                    )
+                    r.custom["DynamicInfo"] = {
+                        "raw": dynamic,
+                        "length": (
+                            len(dynamic)
+                            if isinstance(dynamic, (bytes, bytearray))
+                            else None
+                        ),
+                        "last_start": start[1] if start else None,
+                        "created": created[1] if created else None,
+                        "last_stop": stopped[1] if stopped else None,
+                    }
+                    if start:
+                        r.set_event_time(
+                            start[0],
+                            source="TaskCache.DynamicInfo.last_start",
+                            meaning="scheduled_task_last_run",
+                            precision="microseconds",
+                            raw=start[1],
+                        )
+                    elif created:
+                        r.set_event_time(
+                            created[0],
+                            source="TaskCache.DynamicInfo.created",
+                            meaning="scheduled_task_created",
+                            precision="microseconds",
+                            raw=created[1],
+                        )
+                    elif dynamic is None:
+                        r.mark_timestamp_fallback("taskcache_dynamicinfo_missing")
+                    else:
+                        r.mark_timestamp_fallback(
+                            "taskcache_dynamicinfo_invalid_filetime"
+                        )
+                        self.warning(
+                            f"plugin=tasks hive={self.hive_name} path={self.hive_path} "
+                            f"invalid DynamicInfo for {task.name()}"
+                        )
+                    yield r
+
+    def _optional_value(self, key, name, present):
+        value = None
+        with self.recover(key, name, stage="value"):
+            if name in present:
+                value = key.value(name).value()
+        return value
 
 
 class RegistryAction(object):

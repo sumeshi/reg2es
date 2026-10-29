@@ -118,50 +118,62 @@ class Plugin(BasePlugin):
         return unpack('<H', data[idx:idx+2])[0]
 
     def run(self):
-        key = self.open_key(r"Policy\PolAdtEv")
-        if not key:
-            return
+        with self.recover(r"Policy\PolAdtEv", stage="values"):
+            key = self.open_key(r"Policy\PolAdtEv")
+            if not key:
+                return
 
-        # default value
-        data = key.value("")
-        vdata = data.value()
+            # default value
+            data = key.value("")
+            vdata = data.value()
 
-        # According to
-        # http://www.kazamiya.net/files/projects/PolAdtEv_Structure_en_rev4.pdf,
-        # every version of Windows stores in an ordered array the categories,
-        # and the number of subcatergories depend on the version of Windows.
-        # The number of subcategories are stored in a footer structure, which
-        # offset is stored in the header at offset 8 the first category always
-        # starts at offset 12
+            # According to
+            # http://www.kazamiya.net/files/projects/PolAdtEv_Structure_en_rev4.pdf,
+            # every version of Windows stores in an ordered array the categories,
+            # and the number of subcatergories depend on the version of Windows.
+            # The number of subcategories are stored in a footer structure, which
+            # offset is stored in the header at offset 8 the first category always
+            # starts at offset 12
 
-        catCountOffset = self._unpack(vdata, 8)
-        offset = 12
-        subcatCount = OrderedDict.fromkeys(POL.keys())
-        i = 0
-        for ckey in POL.keys():
-            subcatCount[ckey] = self._unpack(vdata, catCountOffset+i*2)
-            i = i + 1
+            catCountOffset = self._unpack(vdata, 8)
+            if (
+                catCountOffset < 12
+                or catCountOffset > len(vdata)
+                or catCountOffset + 2 * len(POL) > len(vdata)
+            ):
+                raise ValueError("invalid audit policy subcategory footer boundary")
+            offset = 12
+            subcatCount = OrderedDict.fromkeys(POL.keys())
+            i = 0
+            for ckey in POL.keys():
+                subcatCount[ckey] = self._unpack(vdata, catCountOffset+i*2)
+                i = i + 1
 
-        currOffset = offset
-        for cat, subcats in POL.items():
-            for i in range(subcatCount[cat]):
-                logtype = self._unpack(vdata, currOffset + 2*i)
-                if logtype > 3:
-                    raise Exception(f'Unexpected value {logtype}')
-                status = LOGTYPES[logtype]
-                res = PluginResult(key=key, value=data)
-                res.custom['cat'] = cat
-                # Newer Windows versions add subcategories that are not present
-                # in the hard-coded table, so the footer count can exceed the
-                # known list.  Fall back to a positional name instead of raising
-                # IndexError and losing the whole SECURITY hive.
-                if i < len(subcats):
-                    res.custom['subcat'] = subcats[i]
-                else:
-                    res.custom['subcat'] = f"{cat} Subcategory {i}"
-                res.custom['status'] = status
-                yield res
-            # Advance by the number of subcategories reported for this category.
-            # Using the count (instead of the loop variable) stays correct even
-            # when a category reports zero subcategories.
-            currOffset = currOffset + 2*subcatCount[cat]
+            currOffset = offset
+            for cat, subcats in POL.items():
+                for i in range(subcatCount[cat]):
+                    if currOffset + 2 * i + 2 > catCountOffset:
+                        with self.recover(key, data, stage="subcategory:table"):
+                            raise ValueError("truncated audit policy subcategory table")
+                        return
+                    with self.recover(key, data, stage=f"subcategory:{cat}[{i}]"):
+                        logtype = self._unpack(vdata, currOffset + 2*i)
+                        if logtype > 3:
+                            raise Exception(f'Unexpected value {logtype}')
+                        status = LOGTYPES[logtype]
+                        res = PluginResult(key=key, value=data)
+                        res.custom['cat'] = cat
+                        # Newer Windows versions add subcategories that are not present
+                        # in the hard-coded table, so the footer count can exceed the
+                        # known list.  Fall back to a positional name instead of raising
+                        # IndexError and losing the whole SECURITY hive.
+                        if i < len(subcats):
+                            res.custom['subcat'] = subcats[i]
+                        else:
+                            res.custom['subcat'] = f"{cat} Subcategory {i}"
+                        res.custom['status'] = status
+                        yield res
+                # Advance by the number of subcategories reported for this category.
+                # Using the count (instead of the loop variable) stays correct even
+                # when a category reports zero subcategories.
+                currOffset = currOffset + 2*subcatCount[cat]

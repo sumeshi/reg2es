@@ -635,14 +635,15 @@ def _join_registry_path(*parts: Optional[str]) -> str:
 
 
 def _ecs_registry_location(
-    hive_name: str, plugin_path: Optional[str]
+    hive_name: str, plugin_path: Optional[str], root_name: Optional[str] = None
 ) -> Tuple[str, str, str]:
     """Map an offline hive path to ECS ``registry.hive/key/path`` fields."""
     relative_path = (plugin_path or "").strip("\\")
-    if relative_path == "ROOT":
+    root_name = (root_name or "ROOT").lstrip("\\")
+    if relative_path == root_name:
         relative_path = ""
-    elif relative_path.startswith("ROOT\\"):
-        relative_path = relative_path[5:]
+    elif relative_path.startswith(root_name + "\\"):
+        relative_path = relative_path[len(root_name) + 1 :]
 
     if hive_name in _ECS_HKLM_HIVES:
         ecs_hive = "HKLM"
@@ -671,6 +672,7 @@ def plugin_result_to_document(
     hive_path: str,
     additional_tags: Optional[Union[str, Sequence[str]]] = None,
     recovery: Optional[dict] = None,
+    root_name: Optional[str] = None,
 ) -> dict:
     """Convert a single PluginResult to an ECS-compliant document.
 
@@ -724,7 +726,7 @@ def plugin_result_to_document(
         timestamp_raw = None
 
     registry_hive, registry_key, registry_path = _ecs_registry_location(
-        hive_name, result.path
+        hive_name, result.path, root_name
     )
     if result.value_name is not None:
         registry_path = _join_registry_path(registry_path, result.value_name)
@@ -1091,7 +1093,12 @@ class Reg2es:
                         instance.hive_name = hive_name
                         instance.hive_path = str(hive_path)
 
+                        errors_before = len(self.errors)
                         try:
+                            root = getattr(reg, "root", None)
+                            root_name = root().name() if callable(root) else None
+                            if not isinstance(root_name, str):
+                                root_name = None
                             for result in instance.run():
                                 try:
                                     doc = plugin_result_to_document(
@@ -1103,6 +1110,7 @@ class Reg2es:
                                         _get_registry_metadata(
                                             reg, "_reg2es_recovery"
                                         ),
+                                        root_name=root_name,
                                     )
                                 except Exception as exc:
                                     instance.record_error(
@@ -1112,7 +1120,10 @@ class Reg2es:
                                 self.successful_records += 1
                                 yield doc
                         except Exception as exc:
-                            if self.error_policy == "raise":
+                            if (
+                                self.error_policy == "raise"
+                                and len(self.errors) > errors_before
+                            ):
                                 raise
                             instance.record_error(None, None, exc)
         finally:

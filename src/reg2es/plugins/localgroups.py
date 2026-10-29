@@ -46,95 +46,110 @@ class Plugin(BasePlugin):
 
     def user_sids_sam(self):
         """Gets user SIDs from the SAM hive"""
-        machine_sid = self.machine_sid()
-        key_accounts = self.open_key("SAM\\Domains\\Account\\Users\\Names")
-        if not key_accounts:
-            return
-        for subkey in key_accounts.subkeys():
-            # User SIDs are built by appending their Relative ID to the machine SID.
-            # Relative IDs are stored inside Names' subkeys; each has a default value where the value *type* holds the
-            # integer value of the RID.
-            sid = "{0}-{1}".format(machine_sid, subkey.value("(default)").value_type())
-            # User names are stored inside Names' subkeys; each subkey's name holds the associated user name.
-            name = subkey.name()
-            if not any(
-                profile.get("sid", None) == sid for profile in self.user_profile_list
-            ):
-                self.user_profile_list.append({"sid": sid, "name": name})
-        return
+        with self.recover("SAM\\Domains\\Account\\Users\\Names", stage="subkeys"):
+            machine_sid = self.machine_sid()
+            key_accounts = self.open_key("SAM\\Domains\\Account\\Users\\Names")
+            if not key_accounts:
+                return
+            for subkey in key_accounts.subkeys():
+                with self.recover(subkey):
+                    # User SIDs are built by appending their Relative ID to the machine SID.
+                    # Relative IDs are stored inside Names' subkeys; each has a default value where the value *type* holds the
+                    # integer value of the RID.
+                    sid = "{0}-{1}".format(
+                        machine_sid, subkey.value("(default)").value_type()
+                    )
+                    # User names are stored inside Names' subkeys; each subkey's name holds the associated user name.
+                    name = subkey.name()
+                    if not any(
+                        profile.get("sid", None) == sid
+                        for profile in self.user_profile_list
+                    ):
+                        self.user_profile_list.append({"sid": sid, "name": name})
 
     def user_sids_soft(self):
         """Gets user SIDs from the SOFTWARE hive"""
-        key_profiles = self.open_key(
-            "Microsoft\\Windows NT\\CurrentVersion\\ProfileList"
-        )
-        if not key_profiles:
-            return
-        for subkey in key_profiles.subkeys():
-            # User SIDs are stored inside ProfileList's subkeys; each subkey's name holds the associated user SID.
-            sid = subkey.name()
-            # The "profile path" points to the user folder; we can use it to map the SID to the user
-            name = subkey.value("ProfileImagePath").value().rpartition("\\")[2]
-            if not any(
-                profile.get("sid", None) == sid for profile in self.user_profile_list
-            ):
-                self.user_profile_list.append({"sid": sid, "name": name})
-        return
+        with self.recover(
+            "Microsoft\\Windows NT\\CurrentVersion\\ProfileList", stage="subkeys"
+        ):
+            key_profiles = self.open_key(
+                "Microsoft\\Windows NT\\CurrentVersion\\ProfileList"
+            )
+            if not key_profiles:
+                return
+            for subkey in key_profiles.subkeys():
+                with self.recover(subkey):
+                    # User SIDs are stored inside ProfileList's subkeys; each subkey's name holds the associated user SID.
+                    sid = subkey.name()
+                    # The "profile path" points to the user folder; we can use it to map the SID to the user
+                    name = subkey.value("ProfileImagePath").value().rpartition("\\")[2]
+                    if not any(
+                        profile.get("sid", None) == sid
+                        for profile in self.user_profile_list
+                    ):
+                        self.user_profile_list.append({"sid": sid, "name": name})
 
     def yield_groups(self):
         """Yields a dictionary representation of groups and their members, from the SAM hive"""
-        key_groups = self.open_key("SAM\\Domains\\Builtin\\Aliases")
-        if not key_groups:
-            return
+        with self.recover("SAM\\Domains\\Builtin\\Aliases", stage="subkeys"):
+            key_groups = self.open_key("SAM\\Domains\\Builtin\\Aliases")
+            if not key_groups:
+                return
 
-        # Yield a custom structure with information from the SAM hive
-        for subkey in key_groups.subkeys():
-            if subkey.name().startswith("00000"):
-                c_raw = subkey.value("C").value()
-                # Header is 13 little-endian unsigned long values and holds among others:
-                # - Group's name offset and length
-                # - Group's description offset and length
-                # - Group members' offset and size (as binary SIDs)
-                c_header = struct.unpack("<13L", c_raw[:0x34])
-                c_data = c_raw[0x34:]
-                c_gname_off = c_header[4]
-                c_gname_len = c_header[5]
-                c_gdesc_off = c_header[7]
-                c_gdesc_len = c_header[8]
-                c_gmembers_off = c_header[10]
-                c_gmembers_size = c_header[12]
+            # Yield a custom structure with information from the SAM hive
+            for subkey in key_groups.subkeys():
+                with self.recover(subkey):
+                    if subkey.name().startswith("00000"):
+                        c_raw = subkey.value("C").value()
+                        # Header is 13 little-endian unsigned long values and holds among others:
+                        # - Group's name offset and length
+                        # - Group's description offset and length
+                        # - Group members' offset and size (as binary SIDs)
+                        c_header = struct.unpack("<13L", c_raw[:0x34])
+                        c_data = c_raw[0x34:]
+                        c_gname_off = c_header[4]
+                        c_gname_len = c_header[5]
+                        c_gdesc_off = c_header[7]
+                        c_gdesc_len = c_header[8]
+                        c_gmembers_off = c_header[10]
+                        c_gmembers_size = c_header[12]
 
-                member_sid_list = []
-                off = c_gmembers_off
-                for _ in range(c_gmembers_size):
-                    # 1 member == 1 binary SID
-                    # SID structure:
-                    #   + 1 byte (revision, little endian)
-                    #   + 1 byte (count of sub auths, little endian)
-                    #   + 6 bytes (authority value, big endian)
-                    #   + n * 4 bytes where n is the count of sub auths
-                    # Look ahead to check the count of sub authorities to compute SID size
-                    sub_auth_count = struct.unpack("<B", c_data[off + 1 : off + 2])[0]
-                    sid_size = 8 + sub_auth_count * 4
-                    member_sid_list.append(self.sid2asc(c_data[off : off + sid_size]))
-                    off += sid_size
+                        member_sid_list = []
+                        off = c_gmembers_off
+                        for _ in range(c_gmembers_size):
+                            # 1 member == 1 binary SID
+                            # SID structure:
+                            #   + 1 byte (revision, little endian)
+                            #   + 1 byte (count of sub auths, little endian)
+                            #   + 6 bytes (authority value, big endian)
+                            #   + n * 4 bytes where n is the count of sub auths
+                            # Look ahead to check the count of sub authorities to compute SID size
+                            sub_auth_count = struct.unpack(
+                                "<B", c_data[off + 1 : off + 2]
+                            )[0]
+                            sid_size = 8 + sub_auth_count * 4
+                            member_sid_list.append(
+                                self.sid2asc(c_data[off : off + sid_size])
+                            )
+                            off += sid_size
 
-                res = PluginResult(key=subkey, value=None)
-                res.custom = {
-                    "name": c_data[c_gname_off : c_gname_off + c_gname_len].decode(
-                        "utf-16-le"
-                    ),
-                    "desc": c_data[c_gdesc_off : c_gdesc_off + c_gdesc_len].decode(
-                        "utf-16-le"
-                    ),
-                    "size": c_gmembers_size,
-                    "member_sids": member_sid_list,
-                }
-                yield res
+                        res = PluginResult(key=subkey, value=None)
+                        res.custom = {
+                            "name": c_data[
+                                c_gname_off : c_gname_off + c_gname_len
+                            ].decode("utf-16-le"),
+                            "desc": c_data[
+                                c_gdesc_off : c_gdesc_off + c_gdesc_len
+                            ].decode("utf-16-le"),
+                            "size": c_gmembers_size,
+                            "member_sids": member_sid_list,
+                        }
+                        yield res
 
     def run(self):
         if self.hive_name == "SOFTWARE":
             self.user_sids_soft()
         elif self.hive_name == "SAM":
-            self.user_sids_sam()
+            with self.recover(r"SAM\Domains\Account", stage="enrichment"):
+                self.user_sids_sam()
             yield from self.yield_groups()

@@ -117,12 +117,18 @@ def test_native_xp_bad_entry_reports_once_and_recovers_neighbors(
     documents, runner = _read_native(tmp_path, cache, chunk_size=chunk_size)
     assert [doc["reg2es"]["custom"]["path"] for doc in documents] == [
         r"C:\first.exe",
+        *([r"\ud800"] if kind == "surrogate" else []),
         r"C:\last.exe",
     ]
     assert runner.failed_records == 1
-    assert runner.errors[0]["stage"] == "shimcache"
+    assert runner.errors[0]["stage"] == (
+        "path_decode" if kind == "surrogate" else "shimcache"
+    )
     assert runner.errors[0]["value"] == "AppCompatCache"
-    assert "byte 952" in runner.errors[0]["error"]
+    if kind == "surrogate":
+        assert documents[1]["reg2es"]["custom"]["path_utf16le"] == "00d8"
+    else:
+        assert "byte 952" in runner.errors[0]["error"]
 
 
 @pytest.mark.parametrize(
@@ -246,7 +252,8 @@ def test_public_api_reports_partial_cache_with_recovered_records(tmp_path):
     before = source.read_bytes()
     with pytest.raises(PartialExtractionError) as raised:
         reg2json(str(source), plugin_names=["shimcache"])
-    assert len(raised.value.records) == 2
+    assert len(raised.value.records) == 3
+    assert raised.value.records[1]["reg2es"]["custom"]["path_utf16le"] == "00d8"
     assert len(raised.value.diagnostics) == 1
     assert source.read_bytes() == before
 
@@ -288,8 +295,10 @@ def test_cli_finalizes_partial_cache_output_and_returns_failure(
         documents = [orjson.loads(line) for line in output.read_bytes().splitlines()]
     assert [doc["reg2es"]["custom"]["path"] for doc in documents] == [
         r"C:\first.exe",
+        r"\ud800",
         r"C:\last.exe",
     ]
+    assert documents[1]["reg2es"]["custom"]["path_utf16le"] == "00d8"
     assert source.read_bytes() == before
 
 

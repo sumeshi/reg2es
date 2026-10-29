@@ -11,10 +11,13 @@ class Plugin(BasePlugin):
     __REGHIVE__ = "NTUSER.DAT"
 
     def run(self):
-        key = self.open_key(r"Software\Microsoft\Terminal Server Client\Default")
-        if not key or not key.values():
-            return
+        path = "Software\\Microsoft\\Terminal Server Client\\Default"
+        with self.recover(path, stage="values"):
+            key = self.open_key(r"Software\Microsoft\Terminal Server Client\Default")
+            if not key or not key.values():
+                return
 
-        for value in key.values():
-            res = PluginResult(key=key, value=value)
-            yield res
+            for value in key.values():
+                with self.recover(key, value):
+                    res = PluginResult(key=key, value=value)
+                    yield res

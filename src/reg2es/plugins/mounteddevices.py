@@ -9,8 +9,11 @@ class Plugin(BasePlugin):
     __REGHIVE__ = "SYSTEM"
 
     def run(self):
-        key = self.open_key("MountedDevices")
-        if not key:
-            return
-        for value in key.values():
-            yield PluginResult(key=key, value=value)
+        path = "MountedDevices"
+        with self.recover(path, stage="values"):
+            key = self.open_key("MountedDevices")
+            if not key:
+                return
+            for value in key.values():
+                with self.recover(key, value):
+                    yield PluginResult(key=key, value=value)

@@ -21,37 +21,43 @@ class Plugin(BasePlugin):
         if self.hive_name == "NTUSER.DAT":
             path = "SOFTWARE\\" + path
         else:
-            self.get_gp_extensions()
+            with self.recover(
+                r"Microsoft\Windows NT\CurrentVersion\Winlogon\GPExtensions",
+                stage="subkeys",
+            ):
+                self.get_gp_extensions()
 
-        k = self.open_key(path)
-        if not k:
-            return
+        with self.recover(path, stage="subkeys"):
+            k = self.open_key(path)
+            if not k:
+                return
 
-        for subkey in k.subkeys():
-            for gpo in subkey.subkeys():
-                r = PluginResult(key=gpo)
-                r.custom = {
-                    "Extension": self.EXTENSIONS.get(subkey.name(), subkey.name()),
-                    "DisplayName": gpo.value("DisplayName").value(),
-                    "DSPath": (
-                        gpo.value("DSPath").value()
-                        if "DSPath" in [x.name() for x in gpo.values()]
-                        else "N/A"
-                    ),
-                    "Path": gpo.value("FileSysPath").value(),
-                    "GPOName": gpo.value("GPOName").value(),
-                    "IParam": (
-                        gpo.value("IParam").value()
-                        if "IParam" in [x.name() for x in gpo.values()]
-                        else "N/A"
-                    ),
-                    "Options": (
-                        gpo.value("Options").value()
-                        if "Options" in [x.name() for x in gpo.values()]
-                        else "N/A"
-                    ),
-                }
-                yield r
+            for subkey in k.subkeys():
+                with self.recover(subkey, stage="subkeys"):
+                    for gpo in subkey.subkeys():
+                        with self.recover(gpo):
+                            r = PluginResult(key=gpo)
+                            r.custom = {
+                                "Extension": self.EXTENSIONS.get(
+                                    subkey.name(), subkey.name()
+                                ),
+                                "DisplayName": gpo.value("DisplayName").value(),
+                                "DSPath": self._optional_value(gpo, "DSPath"),
+                                "Path": gpo.value("FileSysPath").value(),
+                                "GPOName": gpo.value("GPOName").value(),
+                                "IParam": self._optional_value(gpo, "IParam"),
+                                "Options": self._optional_value(gpo, "Options"),
+                            }
+                            yield r
+
+    def _optional_value(self, key, name):
+        value = "N/A"
+        with self.recover(key, name, stage="value"):
+            try:
+                value = key.value(name).value()
+            except RegistryValueNotFoundException:
+                pass
+        return value
 
     def get_gp_extensions(self):
         k = self.open_key(r"Microsoft\Windows NT\CurrentVersion\Winlogon\GPExtensions")
@@ -59,13 +65,14 @@ class Plugin(BasePlugin):
             return
 
         for subkey in k.subkeys():
-            guid = subkey.name()
-            if guid in self.EXTENSIONS.keys():
-                continue
+            with self.recover(subkey):
+                guid = subkey.name()
+                if guid in self.EXTENSIONS.keys():
+                    continue
 
-            name = guid
-            try:
-                name = subkey.value("(default)").value()
-            except RegistryValueNotFoundException:
-                pass
-            self.EXTENSIONS[guid] = name
+                name = guid
+                try:
+                    name = subkey.value("(default)").value()
+                except RegistryValueNotFoundException:
+                    pass
+                self.EXTENSIONS[guid] = name

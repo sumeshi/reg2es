@@ -37,86 +37,100 @@ class Plugin(BasePlugin):
     __REGHIVE__ = "SAM"
 
     def run(self):
-        k = self.open_key("SAM\\Domains\\Account\\Users\\Names")
-        if not k:
-            return
+        path = "SAM\\Domains\\Account\\Users\\Names"
+        with self.recover(path, stage="subkeys"):
+            k = self.open_key(path)
+            if not k:
+                return
 
-        for user in k.subkeys():
-            res = PluginResult(key=user, value=None)
-            rid = None
-            for candidate in user.values():
-                # SAM stores the RID in the default value's registry type
-                # field (commonly 500), not in its data payload.
-                if str(candidate.name()).casefold() in ("", "(default)"):
-                    value_type = candidate.value_type()
-                    if (
-                        isinstance(value_type, int)
-                        and 0 < value_type <= 0xFFFFFFFF
-                        and value_type not in STANDARD_REGISTRY_TYPES
-                    ):
-                        rid = value_type
-                        break
-            f_data = None
-            rid_key = None
-            if rid is not None:
-                rid_key = self.open_key(f"SAM\\Domains\\Account\\Users\\{rid:08x}")
-                if rid_key:
-                    try:
-                        f_data = rid_key.value("F").value()
-                    except Registry.RegistryValueNotFoundException:
-                        f_data = None
+            for user in k.subkeys():
+                with self.recover(user):
+                    res = PluginResult(key=user, value=None)
+                    rid = None
+                    with self.recover(user, stage="values"):
+                        for candidate in user.values():
+                            # SAM stores the RID in the default value's registry type
+                            # field (commonly 500), not in its data payload.
+                            if str(candidate.name()).casefold() in ("", "(default)"):
+                                value_type = candidate.value_type()
+                                if (
+                                    isinstance(value_type, int)
+                                    and 0 < value_type <= 0xFFFFFFFF
+                                    and value_type not in STANDARD_REGISTRY_TYPES
+                                ):
+                                    rid = value_type
+                                    break
+                    f_data = None
+                    rid_key = None
+                    if rid is not None:
+                        rid_path = f"SAM\\Domains\\Account\\Users\\{rid:08x}"
+                        with self.recover(rid_path, "F"):
+                            rid_key = self.open_key(rid_path)
+                            if rid_key:
+                                try:
+                                    f_value = rid_key.value("F")
+                                    try:
+                                        f_data = f_value.value()
+                                    except Exception:
+                                        try:
+                                            f_data = f_value.raw_data()
+                                        except Exception:
+                                            pass
+                                        raise
+                                except Registry.RegistryValueNotFoundException:
+                                    f_data = None
 
-            validation_error = (
-                _f_validation_error(f_data, rid) if f_data is not None else None
-            )
-
-            def sam_time(offset):
-                if f_data is None or validation_error is not None:
-                    return None
-                return filetime_to_datetime(f_data[offset : offset + 8])
-
-            login = sam_time(8)
-            password_reset = sam_time(24)
-            expiry = sam_time(32)
-            failed_login = sam_time(40)
-            res.custom["sam_user"] = {
-                "rid": rid,
-                "f_raw": (
-                    bytes(f_data).hex()
-                    if isinstance(f_data, (bytes, bytearray))
-                    else str(f_data) if f_data is not None else None
-                ),
-                "last_login": login[1] if login else None,
-                "password_reset": password_reset[1] if password_reset else None,
-                "account_expiry": expiry[1] if expiry else None,
-                "failed_login": failed_login[1] if failed_login else None,
-            }
-            if login:
-                res.set_event_time(
-                    login[0],
-                    source="SAM.Users.F.last_login",
-                    meaning="user_last_login",
-                    precision="microseconds",
-                    raw=login[1],
-                )
-            elif rid is None:
-                res.mark_timestamp_fallback("sam_user_rid_missing")
-            elif f_data is None:
-                res.mark_timestamp_fallback("sam_user_f_value_missing")
-            elif validation_error is not None:
-                res.mark_timestamp_fallback(validation_error)
-                self.warning(
-                    f"plugin=localusers hive={self.hive_name} path={self.hive_path} "
-                    f"{validation_error} for {user.name()}"
-                )
-            else:
-                raw_login = int.from_bytes(f_data[8:16], "little")
-                if raw_login in (0, 0x7FFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF):
-                    res.mark_timestamp_fallback("sam_user_last_login_sentinel")
-                else:
-                    res.mark_timestamp_fallback("sam_user_last_login_invalid")
-                    self.warning(
-                        f"plugin=localusers hive={self.hive_name} path={self.hive_path} "
-                        f"invalid last login FILETIME for {user.name()}"
+                    validation_error = (
+                        _f_validation_error(f_data, rid) if f_data is not None else None
                     )
-            yield res
+
+                    def sam_time(offset):
+                        if f_data is None or validation_error is not None:
+                            return None
+                        return filetime_to_datetime(f_data[offset : offset + 8])
+
+                    login = sam_time(8)
+                    password_reset = sam_time(24)
+                    expiry = sam_time(32)
+                    failed_login = sam_time(40)
+                    res.custom["sam_user"] = {
+                        "rid": rid,
+                        "f_raw": (
+                            bytes(f_data).hex()
+                            if isinstance(f_data, (bytes, bytearray))
+                            else str(f_data) if f_data is not None else None
+                        ),
+                        "last_login": login[1] if login else None,
+                        "password_reset": password_reset[1] if password_reset else None,
+                        "account_expiry": expiry[1] if expiry else None,
+                        "failed_login": failed_login[1] if failed_login else None,
+                    }
+                    if login:
+                        res.set_event_time(
+                            login[0],
+                            source="SAM.Users.F.last_login",
+                            meaning="user_last_login",
+                            precision="microseconds",
+                            raw=login[1],
+                        )
+                    elif rid is None:
+                        res.mark_timestamp_fallback("sam_user_rid_missing")
+                    elif f_data is None:
+                        res.mark_timestamp_fallback("sam_user_f_value_missing")
+                    elif validation_error is not None:
+                        res.mark_timestamp_fallback(validation_error)
+                        self.warning(
+                            f"plugin=localusers hive={self.hive_name} path={self.hive_path} "
+                            f"{validation_error} for {user.name()}"
+                        )
+                    else:
+                        raw_login = int.from_bytes(f_data[8:16], "little")
+                        if raw_login in (0, 0x7FFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF):
+                            res.mark_timestamp_fallback("sam_user_last_login_sentinel")
+                        else:
+                            res.mark_timestamp_fallback("sam_user_last_login_invalid")
+                            self.warning(
+                                f"plugin=localusers hive={self.hive_name} path={self.hive_path} "
+                                f"invalid last login FILETIME for {user.name()}"
+                            )
+                    yield res

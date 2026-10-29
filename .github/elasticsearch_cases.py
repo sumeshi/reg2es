@@ -126,6 +126,7 @@ def run_extra_cases(client, transport, new_index, stored_documents, document_id)
 
     run_native_time_cases(client, transport, new_index, stored_documents, document_id)
     run_native_run_case(client, new_index, stored_documents, document_id)
+    run_wide_recovery_cases(client, new_index, stored_documents, document_id)
 
 
 def native_run_recovery(directory):
@@ -351,3 +352,135 @@ def run_native_time_cases(client, transport, new_index, stored_documents, docume
         ]
         == 1
     )
+
+
+def native_wide_recovery_cases(directory):
+    """Use native hives for root names, recovered times and original path bytes."""
+    from reg2es import PartialExtractionError, reg2json
+    from reg2es.plugins import shimcache
+
+    artifact = runpy.run_path(str(Path(__file__).with_name("artifact_fixture.py")))
+
+    def branch(path, values=(), children=()):
+        parts = path.split("\\")
+        tree = [(parts.pop(), list(children), list(values))]
+        for part in reversed(parts):
+            tree = [(part, tree, [])]
+        return tree
+
+    raw_paths = [
+        r"C:\bad".encode("utf-16le")
+        + struct.pack("<H", unit)
+        + ".exe".encode("utf-16le")
+        for unit in (0xD800, 0xD801)
+    ]
+    cache = bytes(shimcache.WIN10_STATS_SIZE)
+    for raw in raw_paths:
+        body = (
+            struct.pack("<H", len(raw)) + raw + struct.pack("<Q", artifact["FILETIME"])
+        )
+        cache += struct.pack("<4sLL", shimcache.WIN10_MAGIC, 0, len(body)) + body
+    system = [("Select", [], [("Current", 4, struct.pack("<I", 1))])]
+    system += branch(
+        r"ControlSet001\Control\Session Manager\AppCompatCache",
+        [("AppCompatCache", 3, cache)],
+    )
+    urls = [
+        (f"url{i}", 1, f"https://{i}.example/\0".encode("utf-16le"))
+        for i in range(1, 4)
+    ]
+    times = [(f"url{i}", 3, struct.pack("<Q", artifact["FILETIME"])) for i in (1, 3)]
+    times.insert(1, ("url2", 7, b"a\0b\0c"))
+    ie = branch(
+        r"Software\Microsoft\Internet Explorer",
+        children=[
+            ("TypedURLs", [], urls),
+            ("TypedURLsTime", [], times),
+        ],
+    )
+    run = branch(
+        r"Software\Microsoft\Windows\CurrentVersion\Run",
+        [
+            ("example", 1, "test.exe\0".encode("utf-16le")),
+        ],
+    )
+    cases = []
+    for label, hive, plugin, tree, root_name, expected_count, failures in (
+        ("root-path", "NTUSER.DAT", "run", run, "CMI-CreateHive{1234}", 1, 0),
+        ("typed-time", "NTUSER.DAT", "typedurls", ie, "ROOT", 3, 1),
+        ("shim-unicode", "SYSTEM", "shimcache", system, "ROOT", 2, 2),
+    ):
+        destination = directory / label
+        destination.mkdir()
+        source = destination / hive
+        source.write_bytes(artifact["make_hive"](tree=tree, root_name=root_name))
+        diagnostics = []
+        try:
+            records = reg2json(source, plugin_names=[plugin], chunk_size=1)
+        except PartialExtractionError as error:
+            records, diagnostics = error.records, error.diagnostics
+        assert len(records) == expected_count and len(diagnostics) == failures
+        if label == "root-path":
+            assert (
+                records[0]["registry"]["path"]
+                == r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run\example"
+            )
+            assert records[0]["reg2es"]["source"]["key_path"].startswith(
+                root_name + "\\"
+            )
+        elif label == "typed-time":
+            assert (
+                records[1]["reg2es"]["custom"]["typedurls_time_raw"] == b"a\0b\0c".hex()
+            )
+        else:
+            assert [
+                record["reg2es"]["custom"]["path_utf16le"] for record in records
+            ] == [p.hex() for p in raw_paths]
+        cases.append((label, source, plugin, records, diagnostics))
+    return cases
+
+
+def run_wide_recovery_cases(client, new_index, stored_documents, document_id):
+    from reg2es import PartialExtractionError, reg2es
+
+    address = urlsplit(os.environ["ELASTICSEARCH_URL"])
+    with TemporaryDirectory() as directory:
+        for label, source, plugin, records, diagnostics in native_wide_recovery_cases(
+            Path(directory)
+        ):
+            index = new_index(label)
+            client.indices.create(index=index, mappings=MAPPINGS)
+            try:
+                reg2es(
+                    source,
+                    host=address.hostname,
+                    port=address.port or (443 if address.scheme == "https" else 80),
+                    scheme=address.scheme,
+                    login=unquote(address.username or ""),
+                    pwd=unquote(address.password or ""),
+                    index=index,
+                    plugin_names=[plugin],
+                    chunk_size=1,
+                )
+            except PartialExtractionError as error:
+                assert diagnostics and error.diagnostics == diagnostics
+            else:
+                assert not diagnostics
+            assert stored_documents(client, index) == {
+                document_id(record): record for record in records
+            }
+            assert len({document_id(record) for record in records}) == len(records)
+            assert raw_mapping(client, index) == RAW_MAPPING
+            assert client.count(
+                index=index, query={"term": {"event.action.keyword": plugin}}
+            )["count"] == len(records)
+            if label == "shim-unicode":
+                for record in records:
+                    raw = record["reg2es"]["custom"]["path_utf16le"]
+                    assert (
+                        client.count(
+                            index=index,
+                            query={"term": {"reg2es.custom.path_utf16le.keyword": raw}},
+                        )["count"]
+                        == 1
+                    )

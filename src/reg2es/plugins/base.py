@@ -4,6 +4,7 @@
 # removed; optional diagnostic stages added.
 
 import struct
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 from Registry import Registry
@@ -115,6 +116,29 @@ class BasePlugin(object):
         self.warning("Record extraction failed: " + repr(diagnostic))
         if self.error_policy == "raise":
             raise error
+
+    @contextmanager
+    def recover(self, key=None, value=None, *, stage="record"):
+        """Report one failed operation and continue after its local boundary."""
+        previous_errors = len(self.errors)
+        try:
+            yield
+        except Exception as error:
+            # Nested boundaries must not record the same strict failure twice.
+            if self.error_policy == "raise" and len(self.errors) > previous_errors:
+                raise
+
+            def context(item, method):
+                if item is None or isinstance(item, str):
+                    return item
+                try:
+                    return getattr(item, method)()
+                except Exception:
+                    return None
+
+            self.record_error(
+                context(key, "path"), context(value, "name"), error, stage=stage
+            )
 
     def run(self):
         """Main entry point of the plugin"""

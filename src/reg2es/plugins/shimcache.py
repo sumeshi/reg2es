@@ -10,6 +10,7 @@
 # formerly separate ShimCacheParser module was integrated; unused CLI display helpers removed.
 # Artifact times retain raw FILETIME precision; Win8/10 preserve every entry.
 # Available execution flags are retained in plugin custom data.
+# Invalid UTF-16 paths retain their original bytes and report decoding errors.
 
 from reg2es.plugins import BasePlugin, PluginResult, filetime_to_datetime
 
@@ -139,8 +140,8 @@ def convert_filetime(dwLowDateTime, dwHighDateTime):
 class CacheEntry(
     namedtuple(
         "CacheEntry",
-        "date path exec_flag file_time raw_filetime file_size cache_update_raw",
-        defaults=(None, None),
+        "date path exec_flag file_time raw_filetime file_size cache_update_raw path_raw",
+        defaults=(None, None, None),
     )
 ):
     """One parsed Shim Cache entry.
@@ -148,6 +149,7 @@ class CacheEntry(
     ``file_time`` is the target file's last-modification ``datetime`` (or
     ``None``) and ``raw_filetime`` is the original 100-ns FILETIME integer.
     ``exec_flag``/``date`` are the legacy display fields.
+    ``path_raw`` is present only when the original UTF-16 path cannot decode.
     """
 
     __slots__ = ()
@@ -160,6 +162,7 @@ class CacheEntry(
             self.exec_flag,
             self.file_size,
             self.cache_update_raw,
+            self.path_raw,
         )
 
 
@@ -177,6 +180,7 @@ def _make_entry(
     exec_flag="N/A",
     file_size=None,
     cache_update_raw=None,
+    path_raw=None,
 ):
     """Build a ``CacheEntry`` from a raw FILETIME pair and path."""
     file_time = convert_filetime(low_datetime, high_datetime)
@@ -193,6 +197,7 @@ def _make_entry(
         raw_filetime=raw_filetime,
         file_size=file_size,
         cache_update_raw=cache_update_raw,
+        path_raw=path_raw,
     )
 
 
@@ -214,6 +219,19 @@ def _read_exact(stream, size):
     if len(data) != size:
         raise ValueError(f"Truncated ShimCache data: expected {size} bytes")
     return data
+
+
+def _decode_path(raw):
+    """Escape invalid code units for display and retain the original path."""
+    try:
+        return raw.decode("utf-16le"), None
+    except UnicodeDecodeError:
+        try:
+            display = raw.decode("utf-16le", "surrogatepass")
+        except UnicodeDecodeError:
+            # An odd trailing byte has no UTF-16 code unit to display.
+            display = raw.decode("utf-16le", "backslashreplace")
+        return display.encode("utf8", "backslashreplace").decode("utf8"), raw
 
 
 def _fixed_entries(bin_data, start, count, size, on_error):
@@ -315,10 +333,10 @@ def read_win8_entries(bin_data, ver_magic, on_error=None):
     ):
         try:
             path_len = struct.unpack("<H", _read_exact(entry_data, 2))[0]
-            path = (
-                _read_exact(entry_data, path_len).decode("utf-16le", "replace")
+            path, path_raw = (
+                _decode_path(_read_exact(entry_data, path_len))
                 if path_len
-                else "None"
+                else ("None", None)
             )
             package_len = struct.unpack("<H", _read_exact(entry_data, 2))[0]
             _read_exact(entry_data, package_len)
@@ -330,6 +348,7 @@ def read_win8_entries(bin_data, ver_magic, on_error=None):
                 high_datetime,
                 path,
                 exec_flag="True" if flags & CSRSS_FLAG else "False",
+                path_raw=path_raw,
             )
         except _PARSE_ERRORS as error:
             _report_error(on_error, error, offset)
@@ -345,15 +364,15 @@ def read_win10_entries(bin_data, ver_magic, creators_update=False, on_error=None
     for offset, entry_data in _entry_frames(bin_data, start, ver_magic, on_error):
         try:
             path_len = struct.unpack("<H", _read_exact(entry_data, 2))[0]
-            path = (
-                _read_exact(entry_data, path_len).decode("utf-16le", "replace")
+            path, path_raw = (
+                _decode_path(_read_exact(entry_data, path_len))
                 if path_len
-                else "None"
+                else ("None", None)
             )
             low_datetime, high_datetime = struct.unpack(
                 "<LL", _read_exact(entry_data, 8)
             )
-            entry = _make_entry(low_datetime, high_datetime, path)
+            entry = _make_entry(low_datetime, high_datetime, path, path_raw=path_raw)
         except _PARSE_ERRORS as error:
             _report_error(on_error, error, offset)
             continue
@@ -387,7 +406,7 @@ def read_nt5_entries(bin_data, entry, on_error=None):
     ):
         try:
             entry.update(raw_entry)
-            path = _read_legacy_path(bin_data, entry)
+            path, path_raw = _read_legacy_path(bin_data, entry)
             exec_flag = (
                 "N/A"
                 if contains_file_size
@@ -403,6 +422,7 @@ def read_nt5_entries(bin_data, entry, on_error=None):
                     if contains_file_size
                     else None
                 ),
+                path_raw=path_raw,
             )
         except _PARSE_ERRORS as error:
             _report_error(on_error, error, offset)
@@ -415,7 +435,7 @@ def _read_legacy_path(bin_data, entry):
     end = entry.Offset + entry.wLength
     if end > len(bin_data):
         raise ValueError("Truncated ShimCache path")
-    return bin_data[entry.Offset : end].decode("utf-16le", "replace")
+    return _decode_path(bin_data[entry.Offset : end])
 
 
 # Read the Shim Cache Windows 7/2k8-R2 entry format.
@@ -431,12 +451,13 @@ def read_nt6_entries(bin_data, entry, on_error=None):
     ):
         try:
             entry.update(raw_entry)
-            path = _read_legacy_path(bin_data, entry)
+            path, path_raw = _read_legacy_path(bin_data, entry)
             parsed = _make_entry(
                 entry.dwLowDateTime,
                 entry.dwHighDateTime,
                 path,
                 exec_flag="True" if entry.FileFlags & CSRSS_FLAG else "False",
+                path_raw=path_raw,
             )
         except _PARSE_ERRORS as error:
             _report_error(on_error, error, offset)
@@ -470,7 +491,7 @@ def read_winxp_entries(bin_data, on_error=None):
                 raise ValueError("Unterminated Windows XP ShimCache path")
             if terminator == 0:
                 continue  # An unused slot has no path or entry to emit.
-            path = path_data[:terminator].decode("utf-16le")
+            path, path_raw = _decode_path(path_data[:terminator])
             low_datetime, high_datetime, file_size, cache_update_raw = (
                 struct.unpack_from("<2LQQ", raw_entry, MAX_PATH + 8)
             )
@@ -480,6 +501,7 @@ def read_winxp_entries(bin_data, on_error=None):
                 path,
                 file_size=file_size,
                 cache_update_raw=cache_update_raw,
+                path_raw=path_raw,
             )
         except _PARSE_ERRORS as error:
             _report_error(on_error, error, offset)
@@ -514,6 +536,13 @@ class Plugin(BasePlugin):
             return
 
         for entry in read_cache_results:
+            if entry.path_raw is not None:
+                try:
+                    entry.path_raw.decode("utf-16le")
+                except UnicodeDecodeError as error:
+                    self.record_error(
+                        key.path(), value.name(), error, stage="path_decode"
+                    )
             res = PluginResult(key=key, value=None)
             res.custom["date"] = entry.date
             if entry.exec_flag in ("True", "False"):
@@ -521,6 +550,8 @@ class Plugin(BasePlugin):
             # Raw unsigned QWORDs can exceed Elasticsearch's signed long
             # range, especially sentinels; keep a stable, lossless text type.
             res.custom["file_mtime_raw"] = str(entry.raw_filetime)
+            if entry.path_raw is not None:
+                res.custom["path_utf16le"] = entry.path_raw.hex()
             if entry.file_size is not None:
                 res.custom["file_size_raw"] = str(entry.file_size)
             if entry.cache_update_raw is not None:

@@ -1,6 +1,7 @@
 # This file is derived from regrippy (https://github.com/airbus-cert/regrippy)
 # commit 32e3ab3243415b7bf46f812d933f4d29862e3046 (v2.0.3), licensed under Apache-2.0.
-# Modifications: imports adapted to reg2es.plugins; unused CLI display helpers removed.
+# Modifications: imports adapted to reg2es.plugins; unused CLI display helpers
+# removed; recover independent entries and report local read failures.
 
 from Registry import Registry
 
@@ -13,38 +14,53 @@ class Plugin(BasePlugin):
     __REGHIVE__ = "SOFTWARE"
 
     def run(self):
-        key = self.open_key("Microsoft\\Windows\\CurrentVersion\\Uninstall")
-        if not key:
-            return
+        for path in (
+            r"Microsoft\Windows\CurrentVersion\Uninstall",
+            r"Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+        ):
+            with self.recover(path, stage="subkeys"):
+                key = self.open_key(path)
+                if not key:
+                    continue
+                for program in key.subkeys():
+                    with self.recover(program):
+                        display_name = "[N/A]"
+                        with self.recover(program, "DisplayName"):
+                            try:
+                                display_name = program.value("DisplayName").value()
+                            except Registry.RegistryValueNotFoundException:
+                                pass
 
-        for program in key.subkeys():
-            try:
-                display_name = program.value("DisplayName").value()
-            except Registry.RegistryValueNotFoundException:
-                display_name = "[N/A]"
+                        uninstall_string = "[N/A]"
+                        with self.recover(program, "UninstallString"):
+                            try:
+                                uninstall_string = program.value(
+                                    "UninstallString"
+                                ).value()
+                            except Registry.RegistryValueNotFoundException:
+                                pass
 
-            try:
-                uninstall_string = program.value("UninstallString").value()
-            except Registry.RegistryValueNotFoundException:
-                uninstall_string = "[N/A]"
+                        install_date = None
+                        with self.recover(program, "InstallDate"):
+                            try:
+                                install_date = program.value("InstallDate").value()
+                            except Registry.RegistryValueNotFoundException:
+                                pass
 
-            try:
-                install_date = program.value("InstallDate").value()
-            except Registry.RegistryValueNotFoundException:
-                install_date = None
-
-            res = PluginResult(key=program)
-            res.custom["display_name"] = display_name
-            res.custom["uninstall_string"] = uninstall_string
-            res.custom["install_date_raw"] = install_date
-            res.custom["timestamp_investigation"] = {
-                "status": "unconfirmed",
-                "candidate": "InstallDate",
-                "fallback": "key.last_write",
-                "reason": "date-only values may describe install, update, or repair",
-                "precision": "date" if isinstance(install_date, str) else "unknown",
-            }
-            res.mark_timestamp_fallback(
-                "uninstall_installdate_precision_or_meaning_unconfirmed"
-            )
-            yield res
+                        res = PluginResult(key=program)
+                        res.custom["display_name"] = display_name
+                        res.custom["uninstall_string"] = uninstall_string
+                        res.custom["install_date_raw"] = install_date
+                        res.custom["timestamp_investigation"] = {
+                            "status": "unconfirmed",
+                            "candidate": "InstallDate",
+                            "fallback": "key.last_write",
+                            "reason": "date-only values may describe install, update, or repair",
+                            "precision": (
+                                "date" if isinstance(install_date, str) else "unknown"
+                            ),
+                        }
+                        res.mark_timestamp_fallback(
+                            "uninstall_installdate_precision_or_meaning_unconfirmed"
+                        )
+                        yield res
