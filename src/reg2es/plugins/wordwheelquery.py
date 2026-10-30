@@ -42,18 +42,20 @@ class Plugin(BasePlugin):
             if not key:
                 return
 
-            values = list(key.values())
+            values = []
+            for value in key.values():
+                with self.recover(key, value, stage="name"):
+                    values.append((value, value.name()))
             mru_value = next(
-                (value for value in values if value.name().casefold() == "mrulistex"),
+                (value for value, name in values if name.casefold() == "mrulistex"),
                 None,
             )
             order = []
             if mru_value:
                 with self.recover(key, mru_value, stage="metadata"):
                     order = _mru_order(mru_value.value())
-            for value in values:
+            for value, name in values:
                 with self.recover(key, value):
-                    name = value.name()
                     if name.casefold() == "mrulistex":
                         continue
                     result = PluginResult(key=key, value=value)

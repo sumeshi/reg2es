@@ -4,6 +4,8 @@
 
 import struct
 
+from Registry.Registry import RegistryKeyNotFoundException
+
 from reg2es.plugins import BasePlugin, PluginResult
 
 
@@ -39,18 +41,27 @@ class Plugin(BasePlugin):
             # Loop over all versions
             for version in k.subkeys():
                 with self.recover(version, stage="subkeys"):
+                    version_name = version.name()
                     try:
-                        float(version.name())
+                        float(version_name)
                     except ValueError:
                         continue
 
                     # For each version, look for these programs specifically
                     for program in ["Word", "Excel", "PowerPoint"]:
                         with self.recover(version, program, stage="values"):
-                            program_key = self.open_key(
-                                f"Software\\Microsoft\\Office\\{version.name()}\\{program}\\Security\\Trusted Documents\\TrustRecords"
-                            )
-                            if not program_key:
+                            # Start at the enumerated version so an unreadable
+                            # sibling name cannot block this version's records.
+                            program_key = version
+                            try:
+                                for component in (
+                                    program,
+                                    "Security",
+                                    "Trusted Documents",
+                                    "TrustRecords",
+                                ):
+                                    program_key = program_key.subkey(component)
+                            except RegistryKeyNotFoundException:
                                 continue
 
                             for value in program_key.values():
