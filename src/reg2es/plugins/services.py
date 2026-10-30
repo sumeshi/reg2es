@@ -19,9 +19,13 @@ class Plugin(BasePlugin):
 
         for service in key.subkeys():
             key_path, value_name = "<unreadable>", None
+            errors_before = len(self.errors)
             try:
                 key_path = service.path()
-                values = [x.name() for x in service.values()]
+                values = {}
+                for entry in service.values():
+                    with self.recover(service, entry, stage="name"):
+                        values.setdefault(entry.name(), entry)
                 res = PluginResult(key=service, value=None)
                 for name, field, default in (
                     ("ImagePath", "image_path", "N/A"),
@@ -32,7 +36,7 @@ class Plugin(BasePlugin):
                     value_name = name
                     raw = default
                     if name in values:
-                        raw = service.value(name).value()
+                        raw = values[name].value()
                     if name == "Start":
                         try:
                             value = ServiceStartMode(raw)
@@ -49,9 +53,12 @@ class Plugin(BasePlugin):
                         value = raw
                     res.custom[field] = value
             except Exception as exc:
+                if self.error_policy == "raise" and len(self.errors) > errors_before:
+                    raise
                 self.record_error(key_path, value_name, exc)
                 continue
             yield res
+
 
 class ServiceStartMode(Enum):
     AUTOMATIC = 2
@@ -60,4 +67,3 @@ class ServiceStartMode(Enum):
     MANUAL = 3
     SYSTEM = 1
     UNKNOWN = -1
-

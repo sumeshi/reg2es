@@ -51,22 +51,35 @@ class Plugin(BasePlugin):
             maintenance_guids = []
             plain_guids = []
 
+            children = {}
+            for child in k.subkeys():
+                with self.recover(k, child, stage="name"):
+                    children.setdefault(child.name(), child)
+
             for t in ["Boot", "Logon", "Maintenance", "Plain"]:
                 with self.recover(k, t, stage="subkeys"):
-                    if t not in [x.name() for x in k.subkeys()]:
+                    if t not in children:
                         continue
-                    for guid in k.subkey(t).subkeys():
-                        g = guid.name()
-                        if t == "Boot":
-                            boot_guids.append(g)
-                        elif t == "Logon":
-                            logon_guids.append(g)
-                        elif t == "Maintenance":
-                            maintenance_guids.append(g)
-                        elif t == "Plain":
-                            plain_guids.append(g)
+                    category = children[t]
+                    for guid in category.subkeys():
+                        with self.recover(category, guid, stage="name"):
+                            g = guid.name()
+                            if t == "Boot":
+                                boot_guids.append(g)
+                            elif t == "Logon":
+                                logon_guids.append(g)
+                            elif t == "Maintenance":
+                                maintenance_guids.append(g)
+                            elif t == "Plain":
+                                plain_guids.append(g)
 
-            for task in k.subkey("Tasks").subkeys():
+            tasks_key = next(
+                (child for name, child in children.items() if name.lower() == "tasks"),
+                None,
+            )
+            if tasks_key is None:
+                raise Registry.RegistryKeyNotFoundException(k.path() + "\\Tasks")
+            for task in tasks_key.subkeys():
                 with self.recover(task):
                     guid = task.name()
                     runtype = "N/A"
@@ -80,12 +93,15 @@ class Plugin(BasePlugin):
                         runtype = "Plain"
 
                     r = PluginResult(key=task)
-                    task_values = [x.name() for x in task.values()]
+                    task_values = {}
+                    for value in task.values():
+                        with self.recover(task, value, stage="name"):
+                            task_values.setdefault(value.name(), value)
                     actions = RegistryAction(None, None)
                     actions_raw = None
                     with self.recover(task, "Actions", stage="value"):
                         if "Actions" in task_values:
-                            action_value = task.value("Actions")
+                            action_value = task_values["Actions"]
                             try:
                                 actions_raw = action_value.value()
                             except Exception:
@@ -98,7 +114,7 @@ class Plugin(BasePlugin):
                             actions_raw = None
                     r.custom = {
                         "RunType": runtype,
-                        "Path": f"{task_prefix}\\Tasks{task.value('Path').value()}",
+                        "Path": f"{task_prefix}\\Tasks{self._path_value(task, task_values)}",
                         "Actions": actions,
                         "Source": self._optional_value(task, "Source", task_values),
                         "Author": self._optional_value(task, "Author", task_values),
@@ -112,7 +128,7 @@ class Plugin(BasePlugin):
                     with self.recover(task, "DynamicInfo", stage="value"):
                         if "DynamicInfo" in task_values:
                             try:
-                                dynamic_value = task.value("DynamicInfo")
+                                dynamic_value = task_values["DynamicInfo"]
                                 try:
                                     dynamic = dynamic_value.value()
                                 except Exception:
@@ -178,8 +194,14 @@ class Plugin(BasePlugin):
         value = None
         with self.recover(key, name, stage="value"):
             if name in present:
-                value = key.value(name).value()
+                value = present[name].value()
         return value
+
+    def _path_value(self, key, values):
+        for name, value in values.items():
+            if name.lower() == "path":
+                return value.value()
+        raise Registry.RegistryValueNotFoundException(key.path() + " : Path")
 
 
 class RegistryAction(object):
