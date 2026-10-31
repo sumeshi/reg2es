@@ -1,5 +1,6 @@
 """Unreadable unrelated VK names leave supported configuration recoverable."""
 
+import json
 import struct
 
 import pytest
@@ -144,7 +145,7 @@ def test_teamviewer_preserves_required_lookup_and_optional_presence_case(tmp_pat
     assert custom["Version"] == "15.0" and custom["LastStartupTime"] == -1
 
 
-def test_services_preserves_defaults_and_optional_presence_case(tmp_path):
+def test_services_matches_lowercase_value_names_and_preserves_missing_defaults(tmp_path):
     source = write_hive(
         tmp_path,
         "SYSTEM",
@@ -152,17 +153,48 @@ def test_services_preserves_defaults_and_optional_presence_case(tmp_path):
             ("Select", [dword("Current", 1)]),
             (
                 r"ControlSet001\Services\example",
-                [sz("imagepath", "lower.exe"), dword("start", 2)],
+                [
+                    sz("imagepath", "lower.exe"),
+                    dword("start", 2),
+                    sz("objectname", "NT AUTHORITY\\LocalService"),
+                ],
             ),
         ],
     )
     docs = reg2json(source, plugin_names=["services"])
     assert docs[0]["reg2es"]["custom"] == {
-        "image_path": "N/A",
-        "start_mode": -1,
+        "image_path": "lower.exe",
+        "start_mode": 2,
         "description": "N/A",
-        "account": "LocalSystem",
+        "account": "NT AUTHORITY\\LocalService",
     }
+
+
+def test_services_lowercase_values_are_exported_by_cli(tmp_path, run_cli):
+    source = write_hive(
+        tmp_path,
+        "SYSTEM",
+        [
+            ("Select", [dword("Current", 1)]),
+            (
+                r"ControlSet001\Services\example",
+                [sz("imagepath", "lower.exe"), dword("start", 3)],
+            ),
+        ],
+    )
+    output = tmp_path / "services.json"
+    result = run_cli(
+        "reg2json",
+        [str(source), "--plugin", "services", "-o", str(output), "--quiet"],
+    )
+    assert result.returncode == 0, result.stderr
+    records = json.loads(output.read_text())
+    assert len(records) == 1
+    custom = records[0]["reg2es"]["custom"]
+    assert custom["image_path"] == "lower.exe"
+    assert custom["start_mode"] == 3
+    assert custom["description"] == "N/A"
+    assert custom["account"] == "LocalSystem"
 
 
 def test_teamviewer_missing_required_value_remains_a_reported_error(tmp_path):

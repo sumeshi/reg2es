@@ -197,3 +197,12 @@ def test_currentcontrolset_ignores_unrelated_unreadable_value_name(tmp_path, pos
     assert len(plugin.errors) == 1
     assert plugin.errors[0]["stage"] == "name"
     assert source.read_bytes() == original
+
+
+@pytest.mark.parametrize("current", [1, 9, 10, 100])
+def test_currentcontrolset_uses_three_digit_minimum_width(tmp_path, current):
+    source = tmp_path / "SYSTEM"
+    source.write_bytes(MAKE(tree=[("Select", [], [dword("Current", current)])]))
+    plugin = open_plugin(source)
+
+    assert plugin.get_currentcontrolset_path() == f"ControlSet{current:03d}"

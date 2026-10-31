@@ -235,7 +235,7 @@ class BasePlugin(object):
             return None
 
         current = self.get_value(select_key, "Current").value()
-        ccs_keyname = "ControlSet00" + str(current)
+        ccs_keyname = "ControlSet" + str(current).zfill(3)
 
         return ccs_keyname
 

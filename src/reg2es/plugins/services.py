@@ -4,6 +4,8 @@
 
 from enum import Enum
 
+from Registry import Registry
+
 from reg2es.plugins import BasePlugin, PluginResult
 
 
@@ -22,10 +24,7 @@ class Plugin(BasePlugin):
             errors_before = len(self.errors)
             try:
                 key_path = service.path()
-                values = {}
-                for entry in service.values():
-                    with self.recover(service, entry, stage="name"):
-                        values.setdefault(entry.name(), entry)
+                values = self.read_values(service)
                 res = PluginResult(key=service, value=None)
                 for name, field, default in (
                     ("ImagePath", "image_path", "N/A"),
@@ -35,8 +34,10 @@ class Plugin(BasePlugin):
                 ):
                     value_name = name
                     raw = default
-                    if name in values:
-                        raw = values[name].value()
+                    try:
+                        raw = self.get_value(service, name, values).value()
+                    except Registry.RegistryValueNotFoundException:
+                        pass
                     if name == "Start":
                         try:
                             value = ServiceStartMode(raw)

@@ -128,6 +128,61 @@ def run_extra_cases(client, transport, new_index, stored_documents, document_id)
     run_native_run_case(client, new_index, stored_documents, document_id)
     run_wide_recovery_cases(client, new_index, stored_documents, document_id)
     run_native_path_case(client, transport, new_index, stored_documents, document_id)
+    run_services_case(client, transport, new_index, stored_documents, document_id)
+
+
+def run_services_case(client, transport, new_index, stored_documents, document_id):
+    """Exercise case-insensitive service values and ControlSet010 natively."""
+    from reg2es import reg2json
+
+    artifact = runpy.run_path(str(Path(__file__).with_name("artifact_fixture.py")))
+    with TemporaryDirectory() as directory:
+        source = Path(directory) / "SYSTEM"
+        tree = [
+            ("Select", [], [("Current", 4, struct.pack("<I", 10))]),
+            (
+                "ControlSet010",
+                [
+                    (
+                        "Services",
+                        [
+                            (
+                                "example",
+                                [],
+                                [
+                                    ("imagepath", 1, "lower.exe\0".encode("utf-16le")),
+                                    ("start", 4, struct.pack("<I", 3)),
+                                ],
+                            )
+                        ],
+                        [],
+                    )
+                ],
+                [],
+            ),
+        ]
+        source.write_bytes(artifact["make_hive"](tree=tree))
+        original = source.read_bytes()
+        documents = reg2json(source, plugin_names=["services"])
+        assert len(documents) == 1
+        document = documents[0]
+        assert document["registry"]["key"].endswith(
+            r"ControlSet010\Services\example"
+        )
+        assert document["reg2es"]["custom"] == {
+            "image_path": "lower.exe",
+            "start_mode": 3,
+            "description": "N/A",
+            "account": "LocalSystem",
+        }
+        assert source.read_bytes() == original
+
+        index = new_index("services-case-and-controlset010")
+        client.indices.create(index=index, mappings=MAPPINGS)
+        assert transport.bulk_indice(documents, index) == (1, [])
+        assert stored_documents(client, index) == {
+            document_id(document): document for document in documents
+        }
 
 
 def native_path_documents(directory):
