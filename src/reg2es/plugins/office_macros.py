@@ -4,6 +4,8 @@
 
 import struct
 
+from Registry.Registry import RegistryKeyNotFoundException
+
 from reg2es.plugins import BasePlugin, PluginResult
 
 
@@ -31,52 +33,68 @@ class Plugin(BasePlugin):
     __REGHIVE__ = ["NTUSER.DAT"]
 
     def run(self):
-        k = self.open_key("Software\\Microsoft\\Office")
-        if not k:
-            return
+        with self.recover("Software\\Microsoft\\Office", stage="subkeys"):
+            k = self.open_key("Software\\Microsoft\\Office")
+            if not k:
+                return
 
-        # Loop over all versions
-        for version in k.subkeys():
-            try:
-                float(version.name())
-            except ValueError:
-                continue
-
-            # For each version, look for these programs specifically
-            for program in ["Word", "Excel", "PowerPoint"]:
-                program_key = self.open_key(
-                    f"Software\\Microsoft\\Office\\{version.name()}\\{program}\\Security\\Trusted Documents\\TrustRecords"
-                )
-                if not program_key:
-                    continue
-
-                for value in program_key.values():
-                    raw = value.value()
-                    if not isinstance(raw, (bytes, bytearray)):
+            # Loop over all versions
+            for version in k.subkeys():
+                with self.recover(version, stage="subkeys"):
+                    version_name = version.name()
+                    try:
+                        float(version_name)
+                    except ValueError:
                         continue
-                    if not raw.endswith(b"\xff\xff\xff\x7f"):
-                        continue
-                    r = PluginResult(key=program_key, value=value)
-                    parsed = _office_enabled_time(raw)
-                    r.custom["trust_record"] = {
-                        "format": "TrustRecordEntry/24",
-                        "ts_enabled_raw": parsed[1] if parsed else None,
-                        "raw": raw,
-                    }
-                    if parsed:
-                        r.set_event_time(
-                            parsed[0],
-                            source="TrustRecords.ts_enabled",
-                            meaning="office_document_macros_enabled",
-                            precision="minute",
-                            raw=parsed[1],
-                        )
-                    else:
-                        r.mark_timestamp_fallback(
-                            "office_trustrecords_enabled_time_invalid"
-                        )
-                        self.warning(
-                            f"plugin=office_macros hive={self.hive_name} path={self.hive_path} "
-                            f"invalid TrustRecord for {value.name()}"
-                        )
-                    yield r
+
+                    # Read application names once so a broken sibling does not
+                    # block the other supported applications or repeat errors.
+                    programs = self.read_subkeys(version)
+                    for program in ["Word", "Excel", "PowerPoint"]:
+                        with self.recover(version, program, stage="values"):
+                            try:
+                                program_key = self.get_subkey(
+                                    version, program, programs
+                                )
+                                for component in (
+                                    "Security",
+                                    "Trusted Documents",
+                                    "TrustRecords",
+                                ):
+                                    program_key = self.get_subkey(
+                                        program_key, component
+                                    )
+                            except RegistryKeyNotFoundException:
+                                continue
+
+                            for value in program_key.values():
+                                with self.recover(program_key, value):
+                                    raw = value.value()
+                                    if not isinstance(raw, (bytes, bytearray)):
+                                        continue
+                                    if not raw.endswith(b"\xff\xff\xff\x7f"):
+                                        continue
+                                    r = PluginResult(key=program_key, value=value)
+                                    parsed = _office_enabled_time(raw)
+                                    r.custom["trust_record"] = {
+                                        "format": "TrustRecordEntry/24",
+                                        "ts_enabled_raw": parsed[1] if parsed else None,
+                                        "raw": raw,
+                                    }
+                                    if parsed:
+                                        r.set_event_time(
+                                            parsed[0],
+                                            source="TrustRecords.ts_enabled",
+                                            meaning="office_document_macros_enabled",
+                                            precision="minute",
+                                            raw=parsed[1],
+                                        )
+                                    else:
+                                        r.mark_timestamp_fallback(
+                                            "office_trustrecords_enabled_time_invalid"
+                                        )
+                                        self.warning(
+                                            f"plugin=office_macros hive={self.hive_name} path={self.hive_path} "
+                                            f"invalid TrustRecord for {value.name()}"
+                                        )
+                                    yield r

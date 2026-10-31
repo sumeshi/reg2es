@@ -26,110 +26,133 @@ class Plugin(BasePlugin):
             yield from self.handle_user_env()
 
     def handle_env_key(self):
-        ccs = self.get_currentcontrolset_path()
-        k = self.open_key(ccs + "\\Control\\Session Manager\\Environment")
-        if not k:
-            return
+        with self.recover(
+            "CurrentControlSet\\Control\\Session Manager\\Environment", stage="values"
+        ):
+            ccs = self.get_currentcontrolset_path()
+            k = self.open_key(ccs + "\\Control\\Session Manager\\Environment")
+            if not k:
+                return
 
-        for v in k.values():
-            r = PluginResult(key=k, value=v)
+            for v in k.values():
+                with self.recover(k, v):
+                    r = PluginResult(key=k, value=v)
 
-            r.custom["Name"] = f"%{v.name()}%"
-            yield r
+                    r.custom["Name"] = f"%{v.name()}%"
+                    yield r
 
     def handle_windows_currentversion(self):
-        k = self.open_key("Microsoft\\Windows\\CurrentVersion")
-        if not k:
-            return
+        with self.recover("Microsoft\\Windows\\CurrentVersion", stage="values"):
+            k = self.open_key("Microsoft\\Windows\\CurrentVersion")
+            if not k:
+                return
+            values = self.read_values(k)
 
-        try:
-            v = k.value("CommonFilesDir")
-            r = PluginResult(key=k, value=v)
-            r.custom["Name"] = "%CommonProgramFiles%"
-            yield r
-        except RegistryValueNotFoundException:
-            pass
+            with self.recover(k, "CommonFilesDir"):
+                try:
+                    v = self.get_value(k, "CommonFilesDir", values)
+                    r = PluginResult(key=k, value=v)
+                    r.custom["Name"] = "%CommonProgramFiles%"
+                    yield r
+                except RegistryValueNotFoundException:
+                    pass
 
-        try:
-            v = k.value("CommonFilesDir (x86)")
-            r = PluginResult(key=k, value=v)
-            r.custom["Name"] = "%CommonProgramFiles(x86)%"
-            yield r
-        except RegistryValueNotFoundException:
-            pass
+            with self.recover(k, "CommonFilesDir (x86)"):
+                try:
+                    v = self.get_value(k, "CommonFilesDir (x86)", values)
+                    r = PluginResult(key=k, value=v)
+                    r.custom["Name"] = "%CommonProgramFiles(x86)%"
+                    yield r
+                except RegistryValueNotFoundException:
+                    pass
 
-        try:
-            v = k.value("CommonW6432Dir")
-            r = PluginResult(key=k, value=v)
-            r.custom["Name"] = "%CommonProgramW6432%"
-            yield r
-        except RegistryValueNotFoundException:
-            pass
+            with self.recover(k, "CommonW6432Dir"):
+                try:
+                    v = self.get_value(k, "CommonW6432Dir", values)
+                    r = PluginResult(key=k, value=v)
+                    r.custom["Name"] = "%CommonProgramW6432%"
+                    yield r
+                except RegistryValueNotFoundException:
+                    pass
 
-        try:
-            v = k.value("ProgramFilesDir")
-            r = PluginResult(key=k, value=v)
-            r.custom["Name"] = "%ProgramFiles%"
-            yield r
-        except RegistryValueNotFoundException:
-            pass
+            with self.recover(k, "ProgramFilesDir"):
+                try:
+                    v = self.get_value(k, "ProgramFilesDir", values)
+                    r = PluginResult(key=k, value=v)
+                    r.custom["Name"] = "%ProgramFiles%"
+                    yield r
+                except RegistryValueNotFoundException:
+                    pass
 
-        try:
-            v = k.value("ProgramFilesDir (x86)")
-            r = PluginResult(key=k, value=v)
-            r.custom["Name"] = "%ProgramFiles(x86)%"
-            yield r
-        except RegistryValueNotFoundException:
-            pass
+            with self.recover(k, "ProgramFilesDir (x86)"):
+                try:
+                    v = self.get_value(k, "ProgramFilesDir (x86)", values)
+                    r = PluginResult(key=k, value=v)
+                    r.custom["Name"] = "%ProgramFiles(x86)%"
+                    yield r
+                except RegistryValueNotFoundException:
+                    pass
 
-        try:
-            v = k.value("ProgramW6432Dir")
-            r = PluginResult(key=k, value=v)
-            r.custom["Name"] = "%ProgramW6432%"
-            yield r
-        except RegistryValueNotFoundException:
-            pass
+            with self.recover(k, "ProgramW6432Dir"):
+                try:
+                    v = self.get_value(k, "ProgramW6432Dir", values)
+                    r = PluginResult(key=k, value=v)
+                    r.custom["Name"] = "%ProgramW6432%"
+                    yield r
+                except RegistryValueNotFoundException:
+                    pass
 
     def handle_windows_nt_currentversion(self):
-        k = self.open_key("Microsoft\\Windows NT\\CurrentVersion")
-        if not k:
-            return
+        with self.recover("Microsoft\\Windows NT\\CurrentVersion", stage="values"):
+            k = self.open_key("Microsoft\\Windows NT\\CurrentVersion")
+            if not k:
+                return
+            values = self.read_values(k)
 
-        try:
-            v = k.value("SystemRoot")
-            r = PluginResult(key=k, value=v)
-            r.custom["Name"] = "%SystemRoot%"
-            yield r
-        except RegistryValueNotFoundException:
-            pass
+            with self.recover(k, "SystemRoot"):
+                try:
+                    v = self.get_value(k, "SystemRoot", values)
+                    r = PluginResult(key=k, value=v)
+                    r.custom["Name"] = "%SystemRoot%"
+                    yield r
+                except RegistryValueNotFoundException:
+                    pass
 
     def handle_profilelist(self):
-        k = self.open_key("Microsoft\\Windows NT\\CurrentVersion\\ProfileList")
-        if not k:
-            return
+        with self.recover(
+            "Microsoft\\Windows NT\\CurrentVersion\\ProfileList", stage="values"
+        ):
+            k = self.open_key("Microsoft\\Windows NT\\CurrentVersion\\ProfileList")
+            if not k:
+                return
+            values = self.read_values(k)
 
-        try:
-            v = k.value("ProgramData")
-            r = PluginResult(key=k, value=v)
-            r.custom["Name"] = "%ProgramData%"
-            yield r
-        except RegistryValueNotFoundException:
-            pass
+            with self.recover(k, "ProgramData"):
+                try:
+                    v = self.get_value(k, "ProgramData", values)
+                    r = PluginResult(key=k, value=v)
+                    r.custom["Name"] = "%ProgramData%"
+                    yield r
+                except RegistryValueNotFoundException:
+                    pass
 
-        try:
-            v = k.value("Public")
-            r = PluginResult(key=k, value=v)
-            r.custom["Name"] = "%Public%"
-            yield r
-        except RegistryValueNotFoundException:
-            pass
+            with self.recover(k, "Public"):
+                try:
+                    v = self.get_value(k, "Public", values)
+                    r = PluginResult(key=k, value=v)
+                    r.custom["Name"] = "%Public%"
+                    yield r
+                except RegistryValueNotFoundException:
+                    pass
 
     def handle_user_env(self):
-        k = self.open_key("Environment")
-        if not k:
-            return
+        with self.recover("Environment", stage="values"):
+            k = self.open_key("Environment")
+            if not k:
+                return
 
-        for v in k.values():
-            r = PluginResult(key=k, value=v)
-            r.custom["Name"] = f"%{v.name()}%"
-            yield r
+            for v in k.values():
+                with self.recover(k, v):
+                    r = PluginResult(key=k, value=v)
+                    r.custom["Name"] = f"%{v.name()}%"
+                    yield r

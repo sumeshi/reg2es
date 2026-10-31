@@ -17,7 +17,7 @@ class Plugin(BasePlugin):
         if not key:
             return
 
-        compname = key.value("ComputerName")
+        compname = self.get_value(key, "ComputerName")
 
         res = PluginResult(key=key, value=compname)
         yield res

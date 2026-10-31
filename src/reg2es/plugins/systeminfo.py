@@ -1,6 +1,7 @@
 # This file is derived from regrippy (https://github.com/airbus-cert/regrippy)
 # commit 32e3ab3243415b7bf46f812d933f4d29862e3046 (v2.0.3), licensed under Apache-2.0.
-# Modifications: imports adapted to reg2es.plugins; unused CLI display helpers removed.
+# Modifications: imports adapted to reg2es.plugins; unused CLI display helpers
+# removed; recover independent entries and report local read failures.
 
 # Plugin written by Tim Taylor, timtaylor3@yahoo.com
 from datetime import datetime, timezone
@@ -16,15 +17,12 @@ class Plugin(BasePlugin):
     def run(self):
         if self.hive_name == "SYSTEM":
 
-            reg_host_name = (
-                self.get_currentcontrolset_path()
-                + r"\Control\ComputerName\ComputerName"
-            )
-            reg_last_shutdown = self.get_currentcontrolset_path() + r"\Control\Windows"
-            reg_interfaces = (
-                self.get_currentcontrolset_path()
-                + r"\Services\Tcpip\Parameters\Interfaces"
-            )
+            control_set = self.get_currentcontrolset_path()
+            if not control_set:
+                return
+            reg_host_name = control_set + r"\Control\ComputerName\ComputerName"
+            reg_last_shutdown = control_set + r"\Control\Windows"
+            reg_interfaces = control_set + r"\Services\Tcpip\Parameters\Interfaces"
 
             paths = [reg_host_name, reg_last_shutdown, reg_interfaces]
 
@@ -32,120 +30,134 @@ class Plugin(BasePlugin):
             paths = [r"Microsoft\Windows NT\CurrentVersion"]
 
         for path in paths:
-            key = self.open_key(path)
+            with self.recover(path, stage="values"):
+                key = self.open_key(path)
 
-            if not key:
-                continue
+                if not key:
+                    continue
 
-            for v in key.values():
-                if v.name() == "ComputerName":
-                    res = PluginResult(key=key, value=v)
-                    hostname = v.value()
-                    res.custom["value"] = "Hostname:\t\t{0}".format(hostname)
-                    yield res
+                for v in key.values():
+                    with self.recover(key, v):
+                        if v.name() == "ComputerName":
+                            res = PluginResult(key=key, value=v)
+                            hostname = v.value()
+                            res.custom["value"] = "Hostname:\t\t{0}".format(hostname)
+                            yield res
 
-                if v.name() == "ShutdownTime":
-                    res = PluginResult(key=key, value=v)
-                    try:
-                        parsed = filetime_to_datetime(v.value())
-                        if parsed is None:
-                            raise ValueError("ShutdownTime is malformed or sentinel")
-                        dt_utc, binary = parsed
-                        last_shutdown = dt_utc.isoformat("T").replace("+00:00", "Z")
-                        res.custom["value"] = "Last Shutdown Time:\t{0}".format(
-                            last_shutdown
-                        )
-                        res.set_event_time(
-                            dt_utc,
-                            source="ShutdownTime",
-                            meaning="shutdown",
-                            precision="microseconds",
-                            raw=binary,
-                        )
-                    except (TypeError, ValueError, OverflowError) as exc:
-                        res.custom["value"] = "Last Shutdown Time:\tN/A"
-                        res.mark_timestamp_fallback("invalid_shutdowntime_filetime")
-                        self.warning(
-                            f"plugin=systeminfo hive={self.hive_name} path={self.hive_path} "
-                            f"invalid ShutdownTime: {exc}"
-                        )
-                    yield res
-
-                if v.name() == "InstallDate":
-                    res = PluginResult(key=key, value=v)
-                    try:
-                        unix_time = v.value()
-                        if not isinstance(unix_time, (int, float)) or unix_time <= 0:
-                            raise ValueError("InstallDate is missing or a sentinel")
-                        install_date = (
-                            datetime.fromtimestamp(unix_time, tz=timezone.utc)
-                            .isoformat("T")
-                            .replace("+00:00", "Z")
-                        )
-                        res.custom["value"] = "Install Date:\t\t{0}".format(
-                            install_date
-                        )
-                        res.set_event_time(
-                            unix_time,
-                            source="InstallDate",
-                            meaning="os_installation",
-                            precision="seconds",
-                        )
-                    except (TypeError, ValueError, OverflowError, OSError) as exc:
-                        res.custom["value"] = "Install Date:\t\tN/A"
-                        res.mark_timestamp_fallback("invalid_installdate_unix_time")
-                        self.warning(
-                            f"plugin=systeminfo hive={self.hive_name} path={self.hive_path} "
-                            f"invalid InstallDate: {exc}"
-                        )
-                    yield res
-
-                if v.name() == "RegisteredOwner":
-                    res = PluginResult(key=key, value=v)
-                    registered_owner = v.value()
-                    res.custom["value"] = "Registered Owner:\t{0}".format(
-                        registered_owner
-                    )
-                    yield res
-
-                if v.name() == "ProductName":
-                    res = PluginResult(key=key, value=v)
-                    product_name = v.value()
-                    res.custom["value"] = "Operating System:\t{0}".format(product_name)
-                    yield res
-
-            if path.endswith("Interfaces"):
-                guid_list = list()
-                for v in key.subkeys():
-                    guid_list.append(v.name())
-
-                for guid in guid_list:
-                    guid_path = path + "\\" + guid
-                    key2 = self.open_key(guid_path)
-
-                    if not key2:
-                        continue
-
-                    for entry in key2.values():
-                        if entry.name() == "IPAddress":
-                            # The IP value belongs to the interface subkey;
-                            # retain that key's LastWrite as the fallback.
-                            res = PluginResult(key=key2, value=entry)
-                            ip_address = entry.value()
-                            if ip_address != "":
-                                res.custom["value"] = "IP Address:\t\t{0}".format(
-                                    ip_address
+                        if v.name() == "ShutdownTime":
+                            res = PluginResult(key=key, value=v)
+                            try:
+                                parsed = filetime_to_datetime(v.value())
+                                if parsed is None:
+                                    raise ValueError(
+                                        "ShutdownTime is malformed or sentinel"
+                                    )
+                                dt_utc, binary = parsed
+                                last_shutdown = dt_utc.isoformat("T").replace(
+                                    "+00:00", "Z"
                                 )
-                                yield res
+                                res.custom["value"] = "Last Shutdown Time:\t{0}".format(
+                                    last_shutdown
+                                )
+                                res.set_event_time(
+                                    dt_utc,
+                                    source="ShutdownTime",
+                                    meaning="shutdown",
+                                    precision="microseconds",
+                                    raw=binary,
+                                )
+                            except (TypeError, ValueError, OverflowError) as exc:
+                                res.custom["value"] = "Last Shutdown Time:\tN/A"
+                                res.mark_timestamp_fallback(
+                                    "invalid_shutdowntime_filetime"
+                                )
+                                self.warning(
+                                    f"plugin=systeminfo hive={self.hive_name} path={self.hive_path} "
+                                    f"invalid ShutdownTime: {exc}"
+                                )
+                            yield res
 
-                        if entry.name() == "DhcpIPAddress":
-                            res = PluginResult(key=key2, value=entry)
-                            ip_address = entry.value()
-                            res.custom["value"] = "IP Address:\t\t{0}".format(
-                                ip_address
+                        if v.name() == "InstallDate":
+                            res = PluginResult(key=key, value=v)
+                            try:
+                                unix_time = v.value()
+                                if (
+                                    not isinstance(unix_time, (int, float))
+                                    or unix_time <= 0
+                                ):
+                                    raise ValueError(
+                                        "InstallDate is missing or a sentinel"
+                                    )
+                                install_date = (
+                                    datetime.fromtimestamp(unix_time, tz=timezone.utc)
+                                    .isoformat("T")
+                                    .replace("+00:00", "Z")
+                                )
+                                res.custom["value"] = "Install Date:\t\t{0}".format(
+                                    install_date
+                                )
+                                res.set_event_time(
+                                    unix_time,
+                                    source="InstallDate",
+                                    meaning="os_installation",
+                                    precision="seconds",
+                                )
+                            except (
+                                TypeError,
+                                ValueError,
+                                OverflowError,
+                                OSError,
+                            ) as exc:
+                                res.custom["value"] = "Install Date:\t\tN/A"
+                                res.mark_timestamp_fallback(
+                                    "invalid_installdate_unix_time"
+                                )
+                                self.warning(
+                                    f"plugin=systeminfo hive={self.hive_name} path={self.hive_path} "
+                                    f"invalid InstallDate: {exc}"
+                                )
+                            yield res
+
+                        if v.name() == "RegisteredOwner":
+                            res = PluginResult(key=key, value=v)
+                            registered_owner = v.value()
+                            res.custom["value"] = "Registered Owner:\t{0}".format(
+                                registered_owner
                             )
-                            if ip_address != "":
-                                res.custom["value"] = "IP Address:\t\t{0}".format(
-                                    ip_address
-                                )
-                                yield res
+                            yield res
+
+                        if v.name() == "ProductName":
+                            res = PluginResult(key=key, value=v)
+                            product_name = v.value()
+                            res.custom["value"] = "Operating System:\t{0}".format(
+                                product_name
+                            )
+                            yield res
+
+                if path.endswith("Interfaces"):
+                    for key2 in key.subkeys():
+                        with self.recover(key2, stage="values"):
+                            for entry in key2.values():
+                                with self.recover(key2, entry):
+                                    if entry.name() == "IPAddress":
+                                        # The IP value belongs to the interface subkey;
+                                        # retain that key's LastWrite as the fallback.
+                                        res = PluginResult(key=key2, value=entry)
+                                        ip_address = entry.value()
+                                        if ip_address != "":
+                                            res.custom["value"] = (
+                                                "IP Address:\t\t{0}".format(ip_address)
+                                            )
+                                            yield res
+
+                                    if entry.name() == "DhcpIPAddress":
+                                        res = PluginResult(key=key2, value=entry)
+                                        ip_address = entry.value()
+                                        res.custom["value"] = (
+                                            "IP Address:\t\t{0}".format(ip_address)
+                                        )
+                                        if ip_address != "":
+                                            res.custom["value"] = (
+                                                "IP Address:\t\t{0}".format(ip_address)
+                                            )
+                                            yield res

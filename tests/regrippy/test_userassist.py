@@ -1,6 +1,6 @@
 # This file is derived from regrippy (https://github.com/airbus-cert/regrippy)
 # commit 32e3ab3243415b7bf46f812d933f4d29862e3046 (v2.0.3), licensed under Apache-2.0.
-# Modifications: import path changed from 'regrippy' to 'reg2es.plugins'.
+# Modifications: imports adapted to reg2es.plugins; focus duration asserted in seconds.
 
 import pytest
 from Registry.Registry import RegBin
@@ -164,7 +164,7 @@ def test_userassist_win7(mock_reg_seven):
     assert ua.name.endswith("\\notepad.exe"), "Decoded name should be notepad"
     assert ua.number_of_execs == 6, "Notepad was executed 6 times"
     assert ua.focus_count == 5, "Notepad was focused 5 times"
-    assert ua.focus_time_secs == 0xEA60, "Notepad was focused for 60,000 seconds (!!)"
+    assert ua.focus_time_secs == 60.0, "60,000 milliseconds is 60 seconds"
 
 
 def test_userassist_winxp(mock_reg_xp):

@@ -34,26 +34,34 @@ class Plugin(BasePlugin):
     __REGHIVE__ = "NTUSER.DAT"
 
     def run(self):
-        key = self.open_key(
-            "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\WordWheelQuery"
-        )
-        if not key:
-            return
+        path = "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\WordWheelQuery"
+        with self.recover(path, stage="values"):
+            key = self.open_key(
+                "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\WordWheelQuery"
+            )
+            if not key:
+                return
 
-        values = list(key.values())
-        mru_value = next(
-            (value for value in values if value.name().casefold() == "mrulistex"),
-            None,
-        )
-        order = _mru_order(mru_value.value()) if mru_value else []
-        for value in values:
-            name = value.name()
-            if name.casefold() == "mrulistex":
-                continue
-            result = PluginResult(key=key, value=value)
-            result.custom["mru_index"] = name
-            result.custom["mru_order"] = order
-            decoded = _decode_search(value.value())
-            if decoded is not None:
-                result.custom["search_term"] = decoded
-            yield result
+            values = []
+            for value in key.values():
+                with self.recover(key, value, stage="name"):
+                    values.append((value, value.name()))
+            mru_value = next(
+                (value for value, name in values if name.casefold() == "mrulistex"),
+                None,
+            )
+            order = []
+            if mru_value:
+                with self.recover(key, mru_value, stage="metadata"):
+                    order = _mru_order(mru_value.value())
+            for value, name in values:
+                with self.recover(key, value):
+                    if name.casefold() == "mrulistex":
+                        continue
+                    result = PluginResult(key=key, value=value)
+                    result.custom["mru_index"] = name
+                    result.custom["mru_order"] = order
+                    decoded = _decode_search(value.value())
+                    if decoded is not None:
+                        result.custom["search_term"] = decoded
+                    yield result

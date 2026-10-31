@@ -15,5 +15,5 @@ class Plugin(BasePlugin):
         if not key:
             return
 
-        value = key.value("ProductName")
+        value = self.get_value(key, "ProductName")
         yield PluginResult(key=key, value=value)

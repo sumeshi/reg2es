@@ -1,6 +1,7 @@
 # This file is derived from regrippy (https://github.com/airbus-cert/regrippy)
 # commit 32e3ab3243415b7bf46f812d933f4d29862e3046 (v2.0.3), licensed under Apache-2.0.
-# Modifications: imports adapted to reg2es.plugins; unused CLI display helpers removed.
+# Modifications: imports adapted to reg2es.plugins; unused CLI display helpers
+# removed; recover independent entries and report local read failures.
 
 from Registry.Registry import RegistryValueNotFoundException
 
@@ -13,23 +14,33 @@ class Plugin(BasePlugin):
     __REGHIVE__ = "NTUSER.DAT"
 
     def run(self):
-        preload = self.open_key("Keyboard Layout\\Preload")
-        substitutes = self.open_key("Keyboard Layout\\Substitutes")
-
-        if not preload or not substitutes:
-            return
-
-        for preload_value in preload.values():
-            preload_txt = preload_value.value()
-
-            try:
-                subs = substitutes.value(preload_txt)
-            except RegistryValueNotFoundException:
-                subs = None
-
-            r = PluginResult(key=preload, value=preload_value)
-            r.custom["substitute"] = subs
-            yield r
+        path = r"Keyboard Layout\Preload"
+        with self.recover(path, stage="values"):
+            preload = self.open_key(path)
+            if not preload:
+                return
+            substitutes = None
+            substitute_values = []
+            with self.recover(r"Keyboard Layout\Substitutes", stage="values"):
+                substitutes = self.open_key(r"Keyboard Layout\Substitutes")
+                if substitutes:
+                    substitute_values = self.read_values(substitutes)
+            for value in preload.values():
+                with self.recover(preload, value):
+                    result = PluginResult(key=preload, value=value)
+                    substitute = None
+                    if substitutes:
+                        with self.recover(substitutes, result.value_data):
+                            try:
+                                # Materialize the value here so a decoding error
+                                # cannot later discard the readable Preload value.
+                                substitute = self.get_value(
+                                    substitutes, result.value_data, substitute_values
+                                ).value()
+                            except RegistryValueNotFoundException:
+                                pass
+                    result.custom["substitute"] = substitute
+                    yield result
 
     def get_lang_name(self, code):
         lang_code = int(code, 16) & (~0xDFF00000)
@@ -256,4 +267,3 @@ languageCodes = {
     0x00140C00: "ADLaM",
     0x00150C00: "Osage",
 }
-

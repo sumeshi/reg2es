@@ -1,6 +1,7 @@
 # This file is derived from regrippy (https://github.com/airbus-cert/regrippy)
 # commit 32e3ab3243415b7bf46f812d933f4d29862e3046 (v2.0.3), licensed under Apache-2.0.
-# Modifications: imports adapted to reg2es.plugins; unused CLI display helpers removed.
+# Modifications: imports adapted to reg2es.plugins; unused CLI display helpers
+# removed; recover independent entries and report local read failures.
 
 from reg2es.plugins import BasePlugin, PluginResult
 
@@ -11,19 +12,32 @@ class Plugin(BasePlugin):
     __REGHIVE__ = "SOFTWARE"
 
     def run(self):
-        k = self.open_key(r"Microsoft\Security Center\Provider\Av")
-        if not k:
-            return
-
-        for subkey in k.subkeys():
-            r = PluginResult(key=subkey)
-            r.custom = {
-                "DisplayName": subkey.value("DISPLAYNAME").value(),
-                "ProductExe": subkey.value("PRODUCTEXE").value(),
-                "ReportingExe": subkey.value("REPORTINGEXE").value(),
-                "State": " | ".join(self.parse_state(subkey.value("STATE").value())),
-            }
-            yield r
+        path = r"Microsoft\Security Center\Provider\Av"
+        with self.recover(path, stage="subkeys"):
+            key = self.open_key(path)
+            if not key:
+                return
+            for subkey in key.subkeys():
+                with self.recover(subkey):
+                    values = self.read_values(subkey)
+                    result = PluginResult(key=subkey)
+                    result.custom = {
+                        "DisplayName": self.get_value(
+                            subkey, "DISPLAYNAME", values
+                        ).value(),
+                        "ProductExe": self.get_value(
+                            subkey, "PRODUCTEXE", values
+                        ).value(),
+                        "ReportingExe": self.get_value(
+                            subkey, "REPORTINGEXE", values
+                        ).value(),
+                        "State": " | ".join(
+                            self.parse_state(
+                                self.get_value(subkey, "STATE", values).value()
+                            )
+                        ),
+                    }
+                    yield result
 
     def parse_state(self, state):
         # Source: https://mcpforlife.com/2020/04/14/how-to-resolve-this-state-value-of-av-providers/
@@ -49,4 +63,3 @@ class Plugin(BasePlugin):
             enums.append("NON_MICROSOFT_PRODUCT")
 
         return enums
-

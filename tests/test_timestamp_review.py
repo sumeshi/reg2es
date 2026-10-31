@@ -59,6 +59,11 @@ def test_shutdown_invalid_time_keeps_record_and_raw_value(raw):
     assert len(results) == 1
     doc = document(results[0], "lastshutdown", "SYSTEM")
     assert doc["reg2es"]["timestamp"]["source"] == "key.last_write"
+    assert (
+        doc["reg2es"]["timestamp"]["fallback_reason"]
+        == "invalid_shutdowntime_filetime"
+    )
+    assert doc["reg2es"]["custom"]["LastShutdownTime"] is None
     assert doc["reg2es"]["value_data"] == raw.hex()
     orjson.dumps(doc)
 

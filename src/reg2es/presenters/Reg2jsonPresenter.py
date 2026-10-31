@@ -101,23 +101,7 @@ class Reg2jsonPresenter:
             if self.output_format != "json":
                 self._export_jsonl(staged)
             else:
-                documents = self.reg2json()
-                if not self.split:
-                    self._write_json(self.output_path, documents, staged)
-                else:
-                    by_plugin: Dict[str, List[dict]] = {}
-                    for document in documents:
-                        name = (
-                            document.get("reg2es", {})
-                            .get("plugin", {})
-                            .get("name")
-                        )
-                        if isinstance(name, str) and name:
-                            by_plugin.setdefault(name, []).append(document)
-                    for name, plugin_documents in by_plugin.items():
-                        self._write_json(
-                            self._plugin_path(name), plugin_documents, staged
-                        )
+                self._export_json_array(staged)
             # Validate the entire set before publishing any file.
             for path in staged:
                 self._check_output_path(path)
@@ -131,6 +115,56 @@ class Reg2jsonPresenter:
         finally:
             for temporary in staged.values():
                 temporary.unlink(missing_ok=True)
+
+    def _export_json_array(self, staged: Dict[Path, Path]) -> None:
+        runner = Reg2es(
+            input_paths=self.input_paths,
+            plugin_names=self.plugin_names,
+            chunk_size=self.chunk_size,
+            additional_tags=self.additional_tags,
+        )
+        written = set()
+        try:
+            with closing(runner.gen_records()) as chunks, ExitStack() as stack:
+                progress = chunks if self.is_quiet else stack.enter_context(tqdm(chunks))
+                if not self.split:
+                    self._stage_path(self.output_path, staged)
+                for chunk in progress:
+                    # Group only the current chunk, retaining per-plugin order.
+                    if self.split:
+                        by_path = {}
+                        for record in chunk:
+                            name = (
+                                record.get("reg2es", {})
+                                .get("plugin", {})
+                                .get("name")
+                            )
+                            if isinstance(name, str) and name:
+                                path = self._plugin_path(name)
+                                by_path.setdefault(path, []).append(record)
+                    else:
+                        by_path = {self.output_path: chunk}
+                    for path, records in by_path.items():
+                        temporary = staged.get(path)
+                        if temporary is None:
+                            temporary = self._stage_path(path, staged)
+                        # One handle at a time; text mode preserves the existing
+                        # platform newline translation, including Windows CRLF.
+                        with temporary.open("a", encoding="utf-8") as output:
+                            for record in records:
+                                output.write(",\n" if path in written else "[\n")
+                                output.write(
+                                    orjson.dumps(
+                                        [record], option=orjson.OPT_INDENT_2
+                                    )[2:-2].decode("utf-8")
+                                )
+                                written.add(path)
+                for path, temporary in staged.items():
+                    with temporary.open("a", encoding="utf-8") as output:
+                        output.write("\n]" if path in written else "[]")
+        finally:
+            self._capture_result(runner)
+            runner.close()
 
     def _export_jsonl(self, staged: Dict[Path, Path]) -> None:
         runner = Reg2es(
@@ -204,11 +238,3 @@ class Reg2jsonPresenter:
             raise ValueError("The output path must not be a symbolic link.")
         if path.exists() and not path.is_file():
             raise ValueError("The output path must be a regular file.")
-
-    def _write_json(
-        self, path: Path, documents: List[dict], staged: Dict[Path, Path]
-    ) -> None:
-        self._stage_path(path, staged).write_text(
-            orjson.dumps(documents, option=orjson.OPT_INDENT_2).decode("utf-8"),
-            encoding="utf-8",
-        )

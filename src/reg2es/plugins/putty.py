@@ -1,11 +1,7 @@
 # This file is derived from regrippy (https://github.com/airbus-cert/regrippy)
 # commit 32e3ab3243415b7bf46f812d933f4d29862e3046 (v2.0.3), licensed under Apache-2.0.
-# Modifications: imports adapted to reg2es.plugins; unused CLI display helpers removed.
-
-from Registry.Registry import (
-    RegistryKeyNotFoundException,
-    RegistryValueNotFoundException,
-)
+# Modifications: imports adapted to reg2es.plugins; unused CLI display helpers
+# removed; recover independent entries and report local read failures.
 
 from reg2es.plugins import BasePlugin, PluginResult
 
@@ -16,42 +12,32 @@ class Plugin(BasePlugin):
     __REGHIVE__ = "NTUSER.DAT"
 
     def run(self):
-        k = self.open_key(r"Software\SimonTatham\PuTTY")
-        if not k:
-            return
+        root = r"Software\SimonTatham\PuTTY"
+        path = root + r"\SshHostKeys"
+        with self.recover(path, stage="values"):
+            key = self.open_key(path)
+            if key:
+                for value in key.values():
+                    with self.recover(key, value):
+                        crypto, host = value.name().split("@")
+                        result = PluginResult(key=key, value=value)
+                        result.custom["type"] = "sshkey"
+                        result.custom["crypto"] = crypto
+                        result.custom["host"] = host
+                        yield result
 
-        # SSH host keys
-        try:
-            ssh_host_keys = k.subkey("SshHostKeys")
-            for v in ssh_host_keys.values():
-                name = v.name()
-                crypto, host = name.split("@")
-
-                r = PluginResult(key=ssh_host_keys, value=v)
-                r.custom["type"] = "sshkey"
-                r.custom["crypto"] = crypto
-                r.custom["host"] = host
-
-                yield r
-        except RegistryKeyNotFoundException:
-            self.warning("Could not find SshHostKeys subkey")
-
-        # Saved sessions
-        try:
-            sessions = k.subkey("Sessions")
-            for sess in sessions.subkeys():
-                try:
-                    name = sess.name()
-                    host = sess.value("HostName").value()
-                    proto = sess.value("Protocol").value()
-
-                    r = PluginResult(key=sess)
-                    r.custom["type"] = "session"
-                    r.custom["host"] = host
-                    r.custom["protocol"] = proto
-
-                    yield r
-                except RegistryValueNotFoundException:
-                    self.warning(f"Malformed entry: {sess.name()}")
-        except RegistryKeyNotFoundException:
-            self.warning("Could not find Sessions subkey")
+        path = root + r"\Sessions"
+        with self.recover(path, stage="subkeys"):
+            sessions = self.open_key(path)
+            if not sessions:
+                return
+            for session in sessions.subkeys():
+                with self.recover(session):
+                    values = self.read_values(session)
+                    host = self.get_value(session, "HostName", values).value()
+                    protocol = self.get_value(session, "Protocol", values).value()
+                    result = PluginResult(key=session)
+                    result.custom["type"] = "session"
+                    result.custom["host"] = host
+                    result.custom["protocol"] = protocol
+                    yield result

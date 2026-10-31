@@ -4,6 +4,7 @@
 # removed; optional diagnostic stages added.
 
 import struct
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 from Registry import Registry
@@ -116,9 +117,77 @@ class BasePlugin(object):
         if self.error_policy == "raise":
             raise error
 
+    @contextmanager
+    def recover(self, key=None, value=None, *, stage="record"):
+        """Report one failed operation and continue after its local boundary."""
+        previous_errors = len(self.errors)
+        try:
+            yield
+        except Exception as error:
+            # Nested boundaries must not record the same strict failure twice.
+            if self.error_policy == "raise" and len(self.errors) > previous_errors:
+                raise
+
+            def context(item, method):
+                if item is None or isinstance(item, str):
+                    return item
+                try:
+                    return getattr(item, method)()
+                except Exception:
+                    return None
+
+            self.record_error(
+                context(key, "path"), context(value, "name"), error, stage=stage
+            )
+
     def run(self):
         """Main entry point of the plugin"""
         raise NotImplementedError("run() needs to be overriden")
+
+    def read_values(self, key):
+        """Read names independently, retaining native values in source order."""
+        entries = []
+        for value in key.values():
+            with self.recover(key, value, stage="name"):
+                entries.append((value.name(), value))
+        return entries
+
+    def get_value(self, key, name, values=None):
+        """Look up a readable value with python-registry's matching rules."""
+        if values is None:
+            values = self.read_values(key)
+        requested = "" if name == "(default)" else name.lower()
+        for candidate, value in values:
+            if candidate == "(default)":
+                # The public name conflates the unnamed value and a literal
+                # named "(default)". Native lookups distinguish the two.
+                if (
+                    not isinstance(value, Registry.RegistryValue)
+                    or not value._vkrecord.has_name()
+                ):
+                    candidate = ""
+            if candidate.lower() == requested:
+                return value
+        raise Registry.RegistryValueNotFoundException(
+            key.path() + " : " + ("" if name == "(default)" else name)
+        )
+
+    def read_subkeys(self, key):
+        """Read child names independently without reopening their parent."""
+        entries = []
+        for child in key.subkeys():
+            with self.recover(key, child, stage="name"):
+                entries.append((child.name(), child))
+        return entries
+
+    def get_subkey(self, key, name, subkeys=None):
+        """Find the first readable child using the native case comparison."""
+        if subkeys is None:
+            subkeys = self.read_subkeys(key)
+        for candidate, child in subkeys:
+            if candidate.lower() == name.lower():
+                return child
+        raise Registry.RegistryKeyNotFoundException(key.path() + "\\" + name)
 
     def open_key(self, path):
         """Opens and returns a registry key
@@ -130,12 +199,30 @@ class BasePlugin(object):
         :rtype: Registry.RegistryKey
         """
         try:
-            key = self.reg.open(path)
-            return key
+            try:
+                return self.reg.open(path)
+            except UnicodeDecodeError:
+                return self._open_key_readable_names(path)
         except Registry.RegistryKeyNotFoundException:
             # A missing key normally means that this plugin does not apply to
             # this particular Windows installation, so it is not actionable.
             return None
+
+    def _open_key_readable_names(self, path):
+        """Recover a native name lookup failure without rescanning bad siblings."""
+        if getattr(self, "_open_key_registry", None) is not self.reg:
+            self._open_key_registry = self.reg
+            self._open_key_subkeys = {}
+
+        key = self.reg.root()
+        remaining = path
+        while remaining:
+            name, _separator, remaining = remaining.partition("\\")
+            cache_key = (key.path(), self.error_policy)
+            if cache_key not in self._open_key_subkeys:
+                self._open_key_subkeys[cache_key] = self.read_subkeys(key)
+            key = self.get_subkey(key, name, self._open_key_subkeys[cache_key])
+        return key
 
     def get_currentcontrolset_path(self):
         """Fetches the path to CurrentControlSet
@@ -147,7 +234,7 @@ class BasePlugin(object):
         if not select_key:
             return None
 
-        current = select_key.value("Current").value()
+        current = self.get_value(select_key, "Current").value()
         ccs_keyname = "ControlSet00" + str(current)
 
         return ccs_keyname

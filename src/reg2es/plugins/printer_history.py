@@ -13,10 +13,13 @@ class Plugin(BasePlugin):
     __REGHIVE__ = "NTUSER.DAT"
 
     def run(self):
-        k = self.open_key(r"Printers\ConvertUserDevModesCount")
-        if not k:
-            return
+        path = "Printers\\ConvertUserDevModesCount"
+        with self.recover(path, stage="values"):
+            k = self.open_key(r"Printers\ConvertUserDevModesCount")
+            if not k:
+                return
 
-        for v in k.values():
-            r = PluginResult(key=k, value=v)
-            yield r
+            for v in k.values():
+                with self.recover(k, v):
+                    r = PluginResult(key=k, value=v)
+                    yield r

@@ -11,11 +11,14 @@ class Plugin(BasePlugin):
     __REGHIVE__ = "SOFTWARE"
 
     def run(self):
-        key = self.open_key("Microsoft\\Windows\\CurrentVersion\\SRUM\\Extensions\\")
-        if not key:
-            return
+        path = "Microsoft\\Windows\\CurrentVersion\\SRUM\\Extensions\\"
+        with self.recover(path, stage="subkeys"):
+            key = self.open_key(path)
+            if not key:
+                return
 
-        for extension_key in key.subkeys():
-            v = extension_key.value("(default)")
-            res = PluginResult(key=extension_key, value=v)
-            yield res
+            for extension_key in key.subkeys():
+                with self.recover(extension_key, "(default)"):
+                    v = self.get_value(extension_key, "(default)")
+                    res = PluginResult(key=extension_key, value=v)
+                    yield res
