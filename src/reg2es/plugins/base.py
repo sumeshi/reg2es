@@ -199,12 +199,30 @@ class BasePlugin(object):
         :rtype: Registry.RegistryKey
         """
         try:
-            key = self.reg.open(path)
-            return key
+            try:
+                return self.reg.open(path)
+            except UnicodeDecodeError:
+                return self._open_key_readable_names(path)
         except Registry.RegistryKeyNotFoundException:
             # A missing key normally means that this plugin does not apply to
             # this particular Windows installation, so it is not actionable.
             return None
+
+    def _open_key_readable_names(self, path):
+        """Recover a native name lookup failure without rescanning bad siblings."""
+        if getattr(self, "_open_key_registry", None) is not self.reg:
+            self._open_key_registry = self.reg
+            self._open_key_subkeys = {}
+
+        key = self.reg.root()
+        remaining = path
+        while remaining:
+            name, _separator, remaining = remaining.partition("\\")
+            cache_key = (key.path(), self.error_policy)
+            if cache_key not in self._open_key_subkeys:
+                self._open_key_subkeys[cache_key] = self.read_subkeys(key)
+            key = self.get_subkey(key, name, self._open_key_subkeys[cache_key])
+        return key
 
     def get_currentcontrolset_path(self):
         """Fetches the path to CurrentControlSet

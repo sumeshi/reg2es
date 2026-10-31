@@ -504,9 +504,9 @@ def run_wide_recovery_cases(client, new_index, stored_documents, document_id):
 
     address = urlsplit(os.environ["ELASTICSEARCH_URL"])
     with TemporaryDirectory() as directory:
-        for label, source, plugin, records, diagnostics in native_wide_recovery_cases(
-            Path(directory)
-        ):
+        cases = native_wide_recovery_cases(Path(directory))
+        cases.extend(native_run_location_cases(Path(directory)))
+        for label, source, plugin, records, diagnostics in cases:
             index = new_index(label)
             client.indices.create(index=index, mappings=MAPPINGS)
             try:
@@ -533,6 +533,21 @@ def run_wide_recovery_cases(client, new_index, stored_documents, document_id):
             assert client.count(
                 index=index, query={"term": {"event.action.keyword": plugin}}
             )["count"] == len(records)
+            if label.startswith("run-locations-"):
+                for record in records:
+                    assert (
+                        client.count(
+                            index=index,
+                            query={
+                                "term": {
+                                    "registry.value.keyword": record["registry"][
+                                        "value"
+                                    ]
+                                }
+                            },
+                        )["count"]
+                        == 1
+                    )
             if label == "shim-unicode":
                 for record in records:
                     raw = record["reg2es"]["custom"]["path_utf16le"]
@@ -543,3 +558,91 @@ def run_wide_recovery_cases(client, new_index, stored_documents, document_id):
                         )["count"]
                         == 1
                     )
+
+
+def native_run_location_cases(directory):
+    """Read both Run views and recover paths around unreadable sibling names."""
+    from Registry import Registry
+    from reg2es import PartialExtractionError, reg2json
+
+    artifact = runpy.run_path(str(Path(__file__).with_name("artifact_fixture.py")))
+    software = r"Microsoft\Windows\CurrentVersion"
+    user = r"Software\Microsoft\Windows\CurrentVersion"
+    paths = {
+        "SOFTWARE": [
+            software + r"\Run",
+            software + r"\RunOnce",
+            software + r"\Policies\Explorer\Run",
+            "Wow6432Node\\" + software + r"\Run",
+            "Wow6432Node\\" + software + r"\RunOnce",
+            "Wow6432Node\\" + software + r"\Policies\Explorer\Run",
+        ],
+        "NTUSER.DAT": [
+            user + r"\Run",
+            user + r"\RunOnce",
+            r"Software\Microsoft\Windows NT\CurrentVersion\Windows\Run",
+            user + r"\Policies\Explorer\Run",
+        ],
+    }
+
+    def tree_from_paths(entries):
+        root = {}
+        for path, values in entries:
+            node = root
+            for component in path.split("\\"):
+                node = node.setdefault(component, {"values": [], "children": {}})[
+                    "children"
+                ]
+            node[None] = values
+
+        def children(node):
+            return [
+                (name, children(data["children"]), data["children"].get(None, []))
+                for name, data in node.items()
+                if name is not None
+            ]
+
+        return children(root)
+
+    cases = []
+    for hive, target_paths in paths.items():
+        for damaged in (False, True):
+            label = (
+                "run-locations-"
+                + hive.lower().replace(".", "-")
+                + ("-damaged" if damaged else "-normal")
+            )
+            folder = directory / label
+            folder.mkdir()
+            source = folder / hive
+            bad_path = "Unrelated" if hive == "SOFTWARE" else user + r"\Unrelated"
+            entries = [(bad_path, [])] + [
+                (path, [(f"startup-{i}", 1, f"program-{i}.exe\0".encode("utf-16le"))])
+                for i, path in enumerate(target_paths)
+            ]
+            source.write_bytes(artifact["make_hive"](tree=tree_from_paths(entries)))
+            expected = reg2json(source, plugin_names=["run"], chunk_size=1)
+            assert len(expected) == len(target_paths)
+            if damaged:
+                native = Registry.Registry(str(source))
+                offset = native.open(bad_path)._nkrecord.offset()
+                raw = bytearray(source.read_bytes())
+                flags = struct.unpack_from("<H", raw, offset + 2)[0]
+                struct.pack_into("<H", raw, offset + 2, flags & ~0x20)
+                struct.pack_into("<H", raw, offset + 0x48, 2)
+                raw[offset + 0x4C : offset + 0x4E] = b"\x00\xd8"
+                source.write_bytes(raw)
+            original = source.read_bytes()
+            diagnostics = []
+            try:
+                records = reg2json(source, plugin_names=["run"], chunk_size=1)
+            except PartialExtractionError as error:
+                records, diagnostics = error.records, error.diagnostics
+            assert records == expected
+            assert len(diagnostics) == int(damaged)
+            if damaged:
+                assert diagnostics[0]["stage"] == "name"
+                assert diagnostics[0]["error"].startswith("UnicodeDecodeError:")
+            assert source.read_bytes() == original
+            cases.append((label, source, "run", records, diagnostics))
+    return cases

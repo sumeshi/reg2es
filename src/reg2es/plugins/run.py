@@ -17,15 +17,20 @@ class Plugin(BasePlugin):
                 r"Software\Microsoft\Windows\CurrentVersion\Run",
                 r"Software\Microsoft\Windows\CurrentVersion\RunOnce",
                 r"Software\Microsoft\Windows NT\CurrentVersion\Windows\Run",
+                r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run",
             ]
         else:  # SOFTWARE
             paths = [
                 r"Microsoft\Windows\CurrentVersion\Run",
                 r"Microsoft\Windows\CurrentVersion\RunOnce",
                 r"Microsoft\Windows\CurrentVersion\Policies\Explorer\Run",
+                r"Wow6432Node\Microsoft\Windows\CurrentVersion\Run",
+                r"Wow6432Node\Microsoft\Windows\CurrentVersion\RunOnce",
+                r"Wow6432Node\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run",
             ]
 
         for path in paths:
+            errors_before = len(self.errors)
             try:
                 key = self.open_key(path)
                 if not key:
@@ -33,6 +38,8 @@ class Plugin(BasePlugin):
                 path = key.path()
                 values = key.values()
             except Exception as exc:
+                if self.error_policy == "raise" and len(self.errors) > errors_before:
+                    raise
                 self.record_error(path, None, exc, stage="values")
                 continue
 
