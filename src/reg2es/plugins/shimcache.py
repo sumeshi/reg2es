@@ -526,7 +526,7 @@ class Plugin(BasePlugin):
 
         if not key:
             return
-        value = key.value("AppCompatCache")
+        value = self.get_value(key, "AppCompatCache")
 
         def on_error(error):
             self.record_error(key.path(), value.name(), error, stage="shimcache")

@@ -19,5 +19,5 @@ class Plugin(BasePlugin):
         if not key:
             return
 
-        value = key.value("TimeZoneKeyName")
+        value = self.get_value(key, "TimeZoneKeyName")
         yield PluginResult(key=key, value=value)

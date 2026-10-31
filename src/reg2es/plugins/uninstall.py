@@ -24,18 +24,21 @@ class Plugin(BasePlugin):
                     continue
                 for program in key.subkeys():
                     with self.recover(program):
+                        values = self.read_values(program)
                         display_name = "[N/A]"
                         with self.recover(program, "DisplayName"):
                             try:
-                                display_name = program.value("DisplayName").value()
+                                display_name = self.get_value(
+                                    program, "DisplayName", values
+                                ).value()
                             except Registry.RegistryValueNotFoundException:
                                 pass
 
                         uninstall_string = "[N/A]"
                         with self.recover(program, "UninstallString"):
                             try:
-                                uninstall_string = program.value(
-                                    "UninstallString"
+                                uninstall_string = self.get_value(
+                                    program, "UninstallString", values
                                 ).value()
                             except Registry.RegistryValueNotFoundException:
                                 pass
@@ -43,7 +46,9 @@ class Plugin(BasePlugin):
                         install_date = None
                         with self.recover(program, "InstallDate"):
                             try:
-                                install_date = program.value("InstallDate").value()
+                                install_date = self.get_value(
+                                    program, "InstallDate", values
+                                ).value()
                             except Registry.RegistryValueNotFoundException:
                                 pass
 

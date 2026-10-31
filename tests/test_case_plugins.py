@@ -33,7 +33,7 @@ def test_wordwheelquery_decodes_terms_and_keeps_mru_order():
 
 def test_usbstor_emits_device_and_instance_identifiers():
     select = MagicMock()
-    select.value.return_value.value.return_value = 1
+    select.values.return_value = [RegistryValueMock("Current", 1, RegDWord)]
     current_set = MagicMock()
     device_type = MagicMock()
     device_type.name.return_value = "Disk&Vendor_Product"

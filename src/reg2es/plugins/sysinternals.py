@@ -20,8 +20,8 @@ class Plugin(BasePlugin):
             for subkey in key.subkeys():
                 with self.recover(subkey):
                     eula = None
-                    for v in subkey.values():
-                        if v.name() == "EulaAccepted":
+                    for name, v in self.read_values(subkey):
+                        if name == "EulaAccepted":
                             eula = v
                             break
 

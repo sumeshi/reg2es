@@ -47,20 +47,23 @@ class Plugin(BasePlugin):
                     except ValueError:
                         continue
 
-                    # For each version, look for these programs specifically
+                    # Read application names once so a broken sibling does not
+                    # block the other supported applications or repeat errors.
+                    programs = self.read_subkeys(version)
                     for program in ["Word", "Excel", "PowerPoint"]:
                         with self.recover(version, program, stage="values"):
-                            # Start at the enumerated version so an unreadable
-                            # sibling name cannot block this version's records.
-                            program_key = version
                             try:
+                                program_key = self.get_subkey(
+                                    version, program, programs
+                                )
                                 for component in (
-                                    program,
                                     "Security",
                                     "Trusted Documents",
                                     "TrustRecords",
                                 ):
-                                    program_key = program_key.subkey(component)
+                                    program_key = self.get_subkey(
+                                        program_key, component
+                                    )
                             except RegistryKeyNotFoundException:
                                 continue
 

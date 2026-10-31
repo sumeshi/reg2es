@@ -13,17 +13,20 @@ class Plugin(BasePlugin):
 
     def run(self):
         path = r"Software\Microsoft\Windows\CurrentVersion\Explorer\RunMRU"
+        errors_before = len(self.errors)
         try:
             key = self.open_key(path)
             if not key:
                 return
             path = key.path()
-            entries = key.values()
+            entries = self.read_values(key)
             if not entries:
                 return
-            order = iter(key.value("MRUList").value())
-            values = {v.name(): v for v in entries if v.name() != "MRUList"}
+            order = iter(self.get_value(key, "MRUList", entries).value())
+            values = {name: value for name, value in entries if name != "MRUList"}
         except Exception as exc:
+            if self.error_policy == "raise" and len(self.errors) > errors_before:
+                raise
             self.record_error(path, None, exc, stage="values")
             return
 

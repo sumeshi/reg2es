@@ -127,6 +127,65 @@ def run_extra_cases(client, transport, new_index, stored_documents, document_id)
     run_native_time_cases(client, transport, new_index, stored_documents, document_id)
     run_native_run_case(client, new_index, stored_documents, document_id)
     run_wide_recovery_cases(client, new_index, stored_documents, document_id)
+    run_native_path_case(client, transport, new_index, stored_documents, document_id)
+
+
+def native_path_documents(directory):
+    """Parse normal, undecodable-byte and literal-escape paths with native REGF."""
+    from reg2es import reg2json
+
+    artifact = runpy.run_path(str(Path(__file__).with_name("artifact_fixture.py")))
+    tree = [("Run", [], [("example", 1, "cmd.exe\0".encode("utf-16le"))])]
+    for name in reversed(r"Software\Microsoft\Windows\CurrentVersion".split("\\")):
+        tree = [(name, tree, [])]
+    sources = []
+    for name in ("normal", os.fsdecode(b"path-\xff"), r"path-\udcff"):
+        folder = directory / name
+        folder.mkdir()
+        source = folder / "NTUSER.DAT"
+        source.write_bytes(artifact["make_hive"](tree=tree))
+        sources.append(source)
+    original = [source.read_bytes() for source in sources]
+    documents = reg2json(sources, plugin_names=["run"], chunk_size=1)
+    assert len(documents) == 3
+    assert [source.read_bytes() for source in sources] == original
+    return sources, documents
+
+
+def run_native_path_case(client, transport, new_index, stored_documents, document_id):
+    if os.name != "posix":
+        return
+    with TemporaryDirectory() as directory:
+        sources, documents = native_path_documents(Path(directory))
+        expected = {document_id(record): record for record in documents}
+        assert len(expected) == 3
+        index = new_index("filesystem-byte-path")
+        mappings = deepcopy(MAPPINGS)
+        mappings["properties"]["log"] = {
+            "properties": {"file": {"properties": {"path": {"type": "keyword"}}}}
+        }
+        mappings["properties"]["reg2es"]["properties"]["source"] = {
+            "properties": {"file_path_bytes_hex": {"type": "keyword"}}
+        }
+        client.indices.create(index=index, mappings=mappings)
+        assert transport.bulk_indice(documents, index) == (3, [])
+        assert stored_documents(client, index) == expected
+        raw_path = os.fsencode(sources[1].resolve()).hex()
+        assert (
+            client.count(
+                index=index,
+                query={"term": {"reg2es.source.file_path_bytes_hex": raw_path}},
+            )["count"]
+            == 1
+        )
+        # The two paths share display text; original bytes keep their IDs distinct.
+        assert (
+            client.count(
+                index=index,
+                query={"term": {"log.file.path": str(sources[2].resolve())}},
+            )["count"]
+            == 2
+        )
 
 
 def native_run_recovery(directory):

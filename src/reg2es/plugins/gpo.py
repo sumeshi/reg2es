@@ -36,25 +36,32 @@ class Plugin(BasePlugin):
                 with self.recover(subkey, stage="subkeys"):
                     for gpo in subkey.subkeys():
                         with self.recover(gpo):
+                            values = self.read_values(gpo)
                             r = PluginResult(key=gpo)
                             r.custom = {
                                 "Extension": self.EXTENSIONS.get(
                                     subkey.name(), subkey.name()
                                 ),
-                                "DisplayName": gpo.value("DisplayName").value(),
-                                "DSPath": self._optional_value(gpo, "DSPath"),
-                                "Path": gpo.value("FileSysPath").value(),
-                                "GPOName": gpo.value("GPOName").value(),
-                                "IParam": self._optional_value(gpo, "IParam"),
-                                "Options": self._optional_value(gpo, "Options"),
+                                "DisplayName": self.get_value(
+                                    gpo, "DisplayName", values
+                                ).value(),
+                                "DSPath": self._optional_value(gpo, "DSPath", values),
+                                "Path": self.get_value(
+                                    gpo, "FileSysPath", values
+                                ).value(),
+                                "GPOName": self.get_value(
+                                    gpo, "GPOName", values
+                                ).value(),
+                                "IParam": self._optional_value(gpo, "IParam", values),
+                                "Options": self._optional_value(gpo, "Options", values),
                             }
                             yield r
 
-    def _optional_value(self, key, name):
+    def _optional_value(self, key, name, values=None):
         value = "N/A"
         with self.recover(key, name, stage="value"):
             try:
-                value = key.value(name).value()
+                value = self.get_value(key, name, values).value()
             except RegistryValueNotFoundException:
                 pass
         return value
@@ -72,7 +79,7 @@ class Plugin(BasePlugin):
 
                 name = guid
                 try:
-                    name = subkey.value("(default)").value()
+                    name = self.get_value(subkey, "(default)").value()
                 except RegistryValueNotFoundException:
                     pass
                 self.EXTENSIONS[guid] = name

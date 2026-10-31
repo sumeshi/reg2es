@@ -20,8 +20,11 @@ class Plugin(BasePlugin):
             if not preload:
                 return
             substitutes = None
+            substitute_values = []
             with self.recover(r"Keyboard Layout\Substitutes", stage="values"):
                 substitutes = self.open_key(r"Keyboard Layout\Substitutes")
+                if substitutes:
+                    substitute_values = self.read_values(substitutes)
             for value in preload.values():
                 with self.recover(preload, value):
                     result = PluginResult(key=preload, value=value)
@@ -31,8 +34,8 @@ class Plugin(BasePlugin):
                             try:
                                 # Materialize the value here so a decoding error
                                 # cannot later discard the readable Preload value.
-                                substitute = substitutes.value(
-                                    result.value_data
+                                substitute = self.get_value(
+                                    substitutes, result.value_data, substitute_values
                                 ).value()
                             except RegistryValueNotFoundException:
                                 pass

@@ -40,7 +40,7 @@ class Plugin(BasePlugin):
             if not version_k:
                 return
 
-            current_build = int(version_k.value("CurrentBuild").value())
+            current_build = int(self.get_value(version_k, "CurrentBuild").value())
             task_prefix = "%WINDIR%"
             if current_build >= 6002:
                 # Since Windows Vista (Task Scheduler 2.0), tasks are stored in %System32%

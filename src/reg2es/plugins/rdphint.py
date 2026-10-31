@@ -24,7 +24,7 @@ class Plugin(BasePlugin):
                     username = ""
                     with self.recover(subkey, "UsernameHint"):
                         try:
-                            username = subkey.value("UsernameHint").value()
+                            username = self.get_value(subkey, "UsernameHint").value()
                         except Registry.RegistryValueNotFoundException:
                             pass
                     result = PluginResult(key=subkey, value=None)

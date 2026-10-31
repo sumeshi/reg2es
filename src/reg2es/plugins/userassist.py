@@ -33,13 +33,16 @@ class Plugin(BasePlugin):
 
         for subkey in key.subkeys():
             key_path = "<unreadable>"
+            errors_before = len(self.errors)
             try:
                 if subkey.name() not in GUIDS:
                     continue
                 key_path = subkey.path() + "\\Count"
-                count_key = subkey.subkey("Count")
+                count_key = self.get_subkey(subkey, "Count")
                 entries = count_key.values()
             except Exception as exc:
+                if self.error_policy == "raise" and len(self.errors) > errors_before:
+                    raise
                 self.record_error(key_path, None, exc, stage="values")
                 continue
 

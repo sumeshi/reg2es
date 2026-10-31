@@ -124,7 +124,7 @@ class Plugin(BasePlugin):
                 return
 
             # default value
-            data = key.value("")
+            data = self.get_value(key, "")
             vdata = data.value()
 
             # According to

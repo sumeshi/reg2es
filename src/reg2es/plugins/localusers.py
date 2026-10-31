@@ -48,10 +48,10 @@ class Plugin(BasePlugin):
                     res = PluginResult(key=user, value=None)
                     rid = None
                     with self.recover(user, stage="values"):
-                        for candidate in user.values():
+                        for name, candidate in self.read_values(user):
                             # SAM stores the RID in the default value's registry type
                             # field (commonly 500), not in its data payload.
-                            if str(candidate.name()).casefold() in ("", "(default)"):
+                            if str(name).casefold() in ("", "(default)"):
                                 value_type = candidate.value_type()
                                 if (
                                     isinstance(value_type, int)
@@ -68,7 +68,7 @@ class Plugin(BasePlugin):
                             rid_key = self.open_key(rid_path)
                             if rid_key:
                                 try:
-                                    f_value = rid_key.value("F")
+                                    f_value = self.get_value(rid_key, "F")
                                     try:
                                         f_data = f_value.value()
                                     except Exception:

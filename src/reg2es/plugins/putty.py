@@ -33,8 +33,9 @@ class Plugin(BasePlugin):
                 return
             for session in sessions.subkeys():
                 with self.recover(session):
-                    host = session.value("HostName").value()
-                    protocol = session.value("Protocol").value()
+                    values = self.read_values(session)
+                    host = self.get_value(session, "HostName", values).value()
+                    protocol = self.get_value(session, "Protocol", values).value()
                     result = PluginResult(key=session)
                     result.custom["type"] = "session"
                     result.custom["host"] = host

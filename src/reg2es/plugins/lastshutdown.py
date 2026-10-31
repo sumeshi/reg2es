@@ -17,8 +17,8 @@ class Plugin(BasePlugin):
         if not key:
             return
 
-        for v in key.values():
-            if v.name() == "ShutdownTime":
+        for name, v in self.read_values(key):
+            if name == "ShutdownTime":
                 res = PluginResult(key=key, value=v)
                 try:
                     parsed = filetime_to_datetime(v.value())

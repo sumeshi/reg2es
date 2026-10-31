@@ -40,7 +40,7 @@ class Plugin(BasePlugin):
         """Gets the machine SID from the SAM hive"""
         # The machine SID on which all local accounts are based sits at the end of the Account key's V data
         key_machine = self.open_key("SAM\\Domains\\Account")
-        v_raw = key_machine.value("V").value()
+        v_raw = self.get_value(key_machine, "V").value()
         v_data = v_raw[len(v_raw) - 24 :]
         return self.sid2asc(v_data)
 
@@ -57,7 +57,7 @@ class Plugin(BasePlugin):
                     # Relative IDs are stored inside Names' subkeys; each has a default value where the value *type* holds the
                     # integer value of the RID.
                     sid = "{0}-{1}".format(
-                        machine_sid, subkey.value("(default)").value_type()
+                        machine_sid, self.get_value(subkey, "(default)").value_type()
                     )
                     # User names are stored inside Names' subkeys; each subkey's name holds the associated user name.
                     name = subkey.name()
@@ -82,7 +82,11 @@ class Plugin(BasePlugin):
                     # User SIDs are stored inside ProfileList's subkeys; each subkey's name holds the associated user SID.
                     sid = subkey.name()
                     # The "profile path" points to the user folder; we can use it to map the SID to the user
-                    name = subkey.value("ProfileImagePath").value().rpartition("\\")[2]
+                    name = (
+                        self.get_value(subkey, "ProfileImagePath")
+                        .value()
+                        .rpartition("\\")[2]
+                    )
                     if not any(
                         profile.get("sid", None) == sid
                         for profile in self.user_profile_list
@@ -100,7 +104,7 @@ class Plugin(BasePlugin):
             for subkey in key_groups.subkeys():
                 with self.recover(subkey):
                     if subkey.name().startswith("00000"):
-                        c_raw = subkey.value("C").value()
+                        c_raw = self.get_value(subkey, "C").value()
                         # Header is 13 little-endian unsigned long values and holds among others:
                         # - Group's name offset and length
                         # - Group's description offset and length

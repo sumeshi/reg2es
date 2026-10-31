@@ -43,10 +43,13 @@ class Plugin(BasePlugin):
                     if not match:
                         continue
 
+                    values = self.read_values(subkey)
                     res = PluginResult(key=subkey)
                     res.custom["kb"] = match.group("kb")
                     res.custom["number"] = match.group("pkgnum")
-                    res.custom["status_code"] = subkey.value("CurrentState").value()
+                    res.custom["status_code"] = self.get_value(
+                        subkey, "CurrentState", values
+                    ).value()
                     res.custom["status"] = self.STATUS_CODES.get(
                         res.custom["status_code"], "unknown"
                     )
@@ -59,7 +62,9 @@ class Plugin(BasePlugin):
                         raw_time[part] = None
                         with self.recover(subkey, name):
                             try:
-                                raw_time[part] = subkey.value(name).value()
+                                raw_time[part] = self.get_value(
+                                    subkey, name, values
+                                ).value()
                             except Registry.RegistryValueNotFoundException:
                                 pass
                     res.custom["install_time_raw"] = raw_time

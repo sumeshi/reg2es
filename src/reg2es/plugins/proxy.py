@@ -21,28 +21,29 @@ class Plugin(BasePlugin):
             yield from self._records(k)
 
     def _records(self, k):
+        values = self.read_values(k)
 
         r = PluginResult(key=k)
 
         r.custom["type"] = "proxy"
         failures = len(self.errors)
-        enabled = self.safe_value(k, "ProxyEnable", 0)
+        enabled = self.safe_value(k, "ProxyEnable", 0, values)
         r.custom["enabled"] = None if len(self.errors) > failures else enabled == 1
-        r.custom["proxy"] = self.safe_value(k, "ProxyServer", "N/A")
-        r.custom["exceptions"] = self.safe_value(k, "ProxyOverride", "")
+        r.custom["proxy"] = self.safe_value(k, "ProxyServer", "N/A", values)
+        r.custom["exceptions"] = self.safe_value(k, "ProxyOverride", "", values)
 
         yield r
 
         r = PluginResult(key=k)
         r.custom["type"] = "autoconfig"
-        r.custom["proxypac"] = self.safe_value(k, "AutoConfigURL", "N/A")
+        r.custom["proxypac"] = self.safe_value(k, "AutoConfigURL", "N/A", values)
 
         yield r
 
-    def safe_value(self, k, name, default):
+    def safe_value(self, k, name, default, values=None):
         with self.recover(k, name):
             try:
-                return k.value(name).value()
+                return self.get_value(k, name, values).value()
             except RegistryValueNotFoundException:
                 return default
         return None

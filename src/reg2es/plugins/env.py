@@ -46,10 +46,11 @@ class Plugin(BasePlugin):
             k = self.open_key("Microsoft\\Windows\\CurrentVersion")
             if not k:
                 return
+            values = self.read_values(k)
 
             with self.recover(k, "CommonFilesDir"):
                 try:
-                    v = k.value("CommonFilesDir")
+                    v = self.get_value(k, "CommonFilesDir", values)
                     r = PluginResult(key=k, value=v)
                     r.custom["Name"] = "%CommonProgramFiles%"
                     yield r
@@ -58,7 +59,7 @@ class Plugin(BasePlugin):
 
             with self.recover(k, "CommonFilesDir (x86)"):
                 try:
-                    v = k.value("CommonFilesDir (x86)")
+                    v = self.get_value(k, "CommonFilesDir (x86)", values)
                     r = PluginResult(key=k, value=v)
                     r.custom["Name"] = "%CommonProgramFiles(x86)%"
                     yield r
@@ -67,7 +68,7 @@ class Plugin(BasePlugin):
 
             with self.recover(k, "CommonW6432Dir"):
                 try:
-                    v = k.value("CommonW6432Dir")
+                    v = self.get_value(k, "CommonW6432Dir", values)
                     r = PluginResult(key=k, value=v)
                     r.custom["Name"] = "%CommonProgramW6432%"
                     yield r
@@ -76,7 +77,7 @@ class Plugin(BasePlugin):
 
             with self.recover(k, "ProgramFilesDir"):
                 try:
-                    v = k.value("ProgramFilesDir")
+                    v = self.get_value(k, "ProgramFilesDir", values)
                     r = PluginResult(key=k, value=v)
                     r.custom["Name"] = "%ProgramFiles%"
                     yield r
@@ -85,7 +86,7 @@ class Plugin(BasePlugin):
 
             with self.recover(k, "ProgramFilesDir (x86)"):
                 try:
-                    v = k.value("ProgramFilesDir (x86)")
+                    v = self.get_value(k, "ProgramFilesDir (x86)", values)
                     r = PluginResult(key=k, value=v)
                     r.custom["Name"] = "%ProgramFiles(x86)%"
                     yield r
@@ -94,7 +95,7 @@ class Plugin(BasePlugin):
 
             with self.recover(k, "ProgramW6432Dir"):
                 try:
-                    v = k.value("ProgramW6432Dir")
+                    v = self.get_value(k, "ProgramW6432Dir", values)
                     r = PluginResult(key=k, value=v)
                     r.custom["Name"] = "%ProgramW6432%"
                     yield r
@@ -106,10 +107,11 @@ class Plugin(BasePlugin):
             k = self.open_key("Microsoft\\Windows NT\\CurrentVersion")
             if not k:
                 return
+            values = self.read_values(k)
 
             with self.recover(k, "SystemRoot"):
                 try:
-                    v = k.value("SystemRoot")
+                    v = self.get_value(k, "SystemRoot", values)
                     r = PluginResult(key=k, value=v)
                     r.custom["Name"] = "%SystemRoot%"
                     yield r
@@ -123,10 +125,11 @@ class Plugin(BasePlugin):
             k = self.open_key("Microsoft\\Windows NT\\CurrentVersion\\ProfileList")
             if not k:
                 return
+            values = self.read_values(k)
 
             with self.recover(k, "ProgramData"):
                 try:
-                    v = k.value("ProgramData")
+                    v = self.get_value(k, "ProgramData", values)
                     r = PluginResult(key=k, value=v)
                     r.custom["Name"] = "%ProgramData%"
                     yield r
@@ -135,7 +138,7 @@ class Plugin(BasePlugin):
 
             with self.recover(k, "Public"):
                 try:
-                    v = k.value("Public")
+                    v = self.get_value(k, "Public", values)
                     r = PluginResult(key=k, value=v)
                     r.custom["Name"] = "%Public%"
                     yield r

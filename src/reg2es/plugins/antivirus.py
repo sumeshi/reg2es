@@ -19,13 +19,22 @@ class Plugin(BasePlugin):
                 return
             for subkey in key.subkeys():
                 with self.recover(subkey):
+                    values = self.read_values(subkey)
                     result = PluginResult(key=subkey)
                     result.custom = {
-                        "DisplayName": subkey.value("DISPLAYNAME").value(),
-                        "ProductExe": subkey.value("PRODUCTEXE").value(),
-                        "ReportingExe": subkey.value("REPORTINGEXE").value(),
+                        "DisplayName": self.get_value(
+                            subkey, "DISPLAYNAME", values
+                        ).value(),
+                        "ProductExe": self.get_value(
+                            subkey, "PRODUCTEXE", values
+                        ).value(),
+                        "ReportingExe": self.get_value(
+                            subkey, "REPORTINGEXE", values
+                        ).value(),
                         "State": " | ".join(
-                            self.parse_state(subkey.value("STATE").value())
+                            self.parse_state(
+                                self.get_value(subkey, "STATE", values).value()
+                            )
                         ),
                     }
                     yield result

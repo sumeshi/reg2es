@@ -144,6 +144,51 @@ class BasePlugin(object):
         """Main entry point of the plugin"""
         raise NotImplementedError("run() needs to be overriden")
 
+    def read_values(self, key):
+        """Read names independently, retaining native values in source order."""
+        entries = []
+        for value in key.values():
+            with self.recover(key, value, stage="name"):
+                entries.append((value.name(), value))
+        return entries
+
+    def get_value(self, key, name, values=None):
+        """Look up a readable value with python-registry's matching rules."""
+        if values is None:
+            values = self.read_values(key)
+        requested = "" if name == "(default)" else name.lower()
+        for candidate, value in values:
+            if candidate == "(default)":
+                # The public name conflates the unnamed value and a literal
+                # named "(default)". Native lookups distinguish the two.
+                if (
+                    not isinstance(value, Registry.RegistryValue)
+                    or not value._vkrecord.has_name()
+                ):
+                    candidate = ""
+            if candidate.lower() == requested:
+                return value
+        raise Registry.RegistryValueNotFoundException(
+            key.path() + " : " + ("" if name == "(default)" else name)
+        )
+
+    def read_subkeys(self, key):
+        """Read child names independently without reopening their parent."""
+        entries = []
+        for child in key.subkeys():
+            with self.recover(key, child, stage="name"):
+                entries.append((child.name(), child))
+        return entries
+
+    def get_subkey(self, key, name, subkeys=None):
+        """Find the first readable child using the native case comparison."""
+        if subkeys is None:
+            subkeys = self.read_subkeys(key)
+        for candidate, child in subkeys:
+            if candidate.lower() == name.lower():
+                return child
+        raise Registry.RegistryKeyNotFoundException(key.path() + "\\" + name)
+
     def open_key(self, path):
         """Opens and returns a registry key
 
@@ -171,7 +216,7 @@ class BasePlugin(object):
         if not select_key:
             return None
 
-        current = select_key.value("Current").value()
+        current = self.get_value(select_key, "Current").value()
         ccs_keyname = "ControlSet00" + str(current)
 
         return ccs_keyname
